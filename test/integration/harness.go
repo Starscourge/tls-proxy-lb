@@ -1,6 +1,6 @@
 // Package integration holds the end-to-end tests and the helpers that set up
-// their environment: test backends now, and the in-process proxy with a
-// generated config once the proxy and config exist (Phases 1 and 2).
+// their environment: test backends, hand-written raw backends, and the proxy
+// running in-process. Phase 2 adds starting the proxy from a generated config.
 //
 // Every helper registers its teardown with t.Cleanup, so a test never has to
 // stop anything itself and goleak in TestMain sees a clean process.

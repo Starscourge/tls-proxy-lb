@@ -4,18 +4,9 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
 )
-
-// CopyBufferSize is the size of the pooled buffers bodies are copied through.
-const CopyBufferSize = 32 << 10
-
-var copyBufPool = sync.Pool{New: func() any {
-	b := make([]byte, CopyBufferSize)
-	return &b
-}}
 
 // ErrAborted is returned by a Body read after Abort.
 var ErrAborted = errors.New("httpx: body aborted")
@@ -114,6 +105,11 @@ func (b *Body) Err() error { return b.err }
 //
 // Timeout may be changed between writes by the goroutine that owns the
 // writer.
+//
+// Bodies reach it through a bufio.Writer, whose large writes go straight
+// through when its buffer is empty, so they are written in the size of the
+// copy buffer that net/http's Request.Write and Response.Write take from
+// their internal pool (32 KiB).
 type DeadlineWriter struct {
 	Conn       net.Conn
 	Timeout    time.Duration
@@ -132,36 +128,6 @@ func (w *DeadlineWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return w.Conn.Write(p)
-}
-
-// ReadFrom copies r to the connection through a pooled fixed-size buffer.
-// A bufio.Writer on top hands large copies here once its own buffer is
-// empty, so bodies go out in CopyBufferSize writes instead of the
-// bufio.Writer's buffer size.
-func (w *DeadlineWriter) ReadFrom(r io.Reader) (int64, error) {
-	bp := copyBufPool.Get().(*[]byte)
-	defer copyBufPool.Put(bp)
-	buf := *bp
-	var n int64
-	for {
-		nr, er := r.Read(buf)
-		if nr > 0 {
-			nw, ew := w.Write(buf[:nr])
-			n += int64(nw)
-			if ew != nil {
-				return n, ew
-			}
-			if nw != nr {
-				return n, io.ErrShortWrite
-			}
-		}
-		if er == io.EOF {
-			return n, nil
-		}
-		if er != nil {
-			return n, er
-		}
-	}
 }
 
 // HeaderLimitReader sits between a connection and its bufio.Reader and caps

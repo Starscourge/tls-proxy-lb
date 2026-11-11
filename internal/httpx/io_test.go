@@ -1,8 +1,6 @@
 package httpx
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -154,58 +152,6 @@ func TestBodyAbortUnblocksRead(t *testing.T) {
 	// Later reads fail at once, even though Read sets a fresh deadline.
 	if _, err := body.Read(make([]byte, 10)); !errors.Is(err, ErrAborted) {
 		t.Fatalf("read after abort: %v, want ErrAborted", err)
-	}
-}
-
-// recordingConn records the size of each Write.
-type recordingConn struct {
-	net.Conn
-	mu     sync.Mutex
-	writes []int
-}
-
-func (r *recordingConn) Write(p []byte) (int, error) {
-	r.mu.Lock()
-	r.writes = append(r.writes, len(p))
-	r.mu.Unlock()
-	return r.Conn.Write(p)
-}
-
-func TestDeadlineWriterReadFromUsesPooledBuffer(t *testing.T) {
-	a, b := tcpPair(t)
-	rc := &recordingConn{Conn: a}
-	payload := bytes.Repeat([]byte("0123456789abcdef"), 64<<10) // 1 MiB
-	done := make(chan []byte, 1)
-	go func() {
-		got, _ := io.ReadAll(b)
-		done <- got
-	}()
-	// Through a small bufio.Writer, as the proxy uses it: the copy bypasses
-	// the 4 KiB buffer once it is empty.
-	bw := bufio.NewWriterSize(&DeadlineWriter{Conn: rc, Timeout: 5 * time.Second}, 4096)
-	bw.WriteString("header\n")
-	if _, err := io.Copy(bw, io.LimitReader(bytes.NewReader(payload), int64(len(payload)))); err != nil {
-		t.Fatal(err)
-	}
-	if err := bw.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	a.(*net.TCPConn).CloseWrite()
-	got := <-done
-	if !bytes.Equal(got, append([]byte("header\n"), payload...)) {
-		t.Fatalf("received %d bytes, want %d", len(got), len(payload)+7)
-	}
-	var big int
-	for _, n := range rc.writes {
-		if n > CopyBufferSize {
-			t.Fatalf("write of %d bytes exceeds CopyBufferSize", n)
-		}
-		if n == CopyBufferSize {
-			big++
-		}
-	}
-	if big < len(payload)/CopyBufferSize-2 {
-		t.Fatalf("only %d full-buffer writes out of %d writes; copy did not use the pooled buffer", big, len(rc.writes))
 	}
 }
 

@@ -115,3 +115,173 @@ race-enabled unit and integration tests, CI runs `lab/check-lab.sh` on the
 runner. That catches a broken Dockerfile or compose file and confirms netem
 works on the runner's kernel. The cost is a few minutes of image builds per
 push.
+
+## Phase 1: Connection handling and plain HTTP proxy
+
+### A helper goroutine writes request bodies
+
+The plan has one goroutine per client connection. A request with a body
+breaks that: the connection goroutine starts a writer goroutine that runs
+`Request.Write` to the backend while the connection goroutine reads the
+response. Writing first and reading after can stall both sides once socket
+buffers fill. That happens with a backend that streams its reply while it
+reads (`/echo` with 10 MB is close to the loopback buffer limits here), and a
+backend that answers early (413) and closes would lose its reply. The writer
+is owned by the connection goroutine, which always joins it before reading
+the next request. To abort it, the connection goroutine closes the upstream
+connection and calls `Body.Abort`, which sets a flag and a past read deadline;
+the reader re-checks the flag after each deadline update, so the abort cannot
+be missed. Requests without a body are written inline with no goroutine. The
+rejected alternative, strictly one goroutine, is simpler but wrong for those
+two cases.
+
+### Deadlines: one per header block, moving ones for bodies
+
+| Wait | Deadline |
+| --- | --- |
+| First request on a new connection | `HeaderRead` |
+| Next request on a keep-alive connection | `Idle` |
+| Header block | `HeaderRead`, from its first byte, for the whole block |
+| Dial | `UpstreamConnect` |
+| Request body from client, response to client | `ClientIO`, pushed forward on each read or write |
+| Request to backend, response from backend | `UpstreamResponse`, pushed forward on each write or read |
+| Response headers | `UpstreamResponse` after the last request byte written |
+
+`ClientIO` (default 60 s, like nginx's `client_body_timeout` and
+`send_timeout`) is not in the plan's `[timeouts]` sketch; it was added as
+`client_io_ms` for Phase 2. Writes to the backend move the upstream read
+deadline too (`DeadlineWriter.ExtendRead`), so a long upload does not count
+against the response timeout. The trade-off of moving deadlines is that a
+peer trickling one byte per interval keeps a transfer alive indefinitely;
+Phase 8 adds a minimum data rate.
+
+`http.ReadRequest` can report a deadline hit mid-line as a parse error of the
+partial line, so the proxy treats any header failure after the header
+deadline as a timeout. A header timeout closes the connection with no reply
+(logged as 408), as nginx does; a slow client gets nothing to read.
+
+### Status codes
+
+| Failure | Status |
+| --- | --- |
+| Unparseable request, missing `Host` on HTTP/1.1, malformed chunked body | 400 |
+| `CONNECT` | 405 |
+| Request body stalls past `ClientIO` before a response started | 408 |
+| Header block over `MaxHeaderBytes` (64 KiB) | 431 |
+| Not HTTP/1.x | 505 |
+| Dial refused or failed, upstream closed or sent garbage or a 101 | 502 |
+| Dial timeout, no response headers within `UpstreamResponse` | 504 |
+
+A dial timeout is 504 rather than 502, as in nginx: it is a timeout, and it
+tells an operator the backend is slow or unreachable rather than refusing.
+Statuses 408 for a header timeout and 499 for a client that left are logged,
+never sent. Once a response has started, a failure on either side can only be
+signalled by closing the client connection; the access log records which side
+failed.
+
+### Every proxy-generated error closes the connection
+
+After a 4xx or 5xx from the proxy itself, the client connection is closed, even
+when the request was fully read and keep-alive would be safe. This keeps one
+rule instead of tracking framing state per error; the cost is a reconnect
+after errors. If unread request bytes may remain (an unread body, a rejected
+header block), the close lingers: `CloseWrite`, then drain at most 256 KiB for
+at most 500 ms. A plain close with unread data sends a reset, which can destroy
+the error response before the client reads it.
+
+### One upstream connection per request, closed by the backend
+
+Phase 1 dials a new connection per request and sends `Connection: close`, so
+the backend closes first and holds the TIME_WAIT state. If the proxy closed
+first, `wrk -c 200` at 15k requests per second would use up the proxy's
+ephemeral ports within seconds. Phase 4 replaces this with reuse.
+
+### Bodies: never drained, flushed before blocking
+
+`Request.Write` and `Response.Write` close bodies when done, and the bodies
+from `ReadRequest` and `ReadResponse` read to EOF on `Close`. A client that
+stops reading a 1 GB response would otherwise cost the proxy the rest of the
+download. `httpx.Body` wraps every body with a `Close` that does nothing.
+
+Data is flushed to the other side whenever the proxy is about to block on a
+read (`flushingReader`: the source's `bufio.Reader` is empty and the
+destination's `bufio.Writer` is not). Without it, response headers and small
+pieces of a slow stream sit in a 4 KiB buffer, and a backend that fails
+mid-body leaves the client with nothing at all. The cost is one extra write
+per socket read on slow streams; fast streams bypass the buffers.
+
+`Request.Write` and `Response.Write` get a writer that hides
+`bufio.Writer.ReadFrom` (`noReadFrom`). `ReadFrom` reads straight into the
+writer's own buffer, and flushing that writer from inside the read corrupts
+it; the first test of an HTTP/1.0 client showed the response headers twice.
+Bodies are therefore copied through net/http's own pooled 32 KiB copy buffer,
+and writes that size go straight to the socket because the `bufio.Writer` is
+empty. Pooling the `bufio` readers and writers is Phase 4.
+
+### Re-framing responses
+
+Responses are always sent as HTTP/1.1, and the proxy, not the backend, decides
+`Connection: close` towards the client: every backend response in Phase 1
+says close, which concerns only the upstream connection. A body of unknown
+length (ended by the backend's close) is re-framed as chunked for HTTP/1.1
+clients, so their connection survives. HTTP/1.0 clients get it
+close-delimited and are always closed after one response; keep-alive for
+HTTP/1.0 was left out as not worth the code.
+
+### Header rules
+
+Hop-by-hop headers (the RFC 9110 list plus `Proxy-Connection` and
+`Keep-Alive`) and headers named in `Connection` are removed in both
+directions. `Upgrade` is removed, so WebSocket and h2c requests are forwarded
+as plain requests; a 101 from a backend is a 502. `Expect: 100-continue` is
+forwarded and 1xx responses are relayed, written by hand because
+`Response.Write` can add a `Content-Length` to them. `X-Forwarded-For` is
+appended to (Phases 6 and 8 decide trust), and `X-Forwarded-Proto` is set to
+`http`. `Request.Write` adds `User-Agent: Go-http-client/1.1` when the client
+sent none; the proxy sets an empty value, which suppresses it.
+
+Known limitation: `http.ReadResponse` deletes the whole `Connection` header
+when it contains `close`, so in a backend response `Connection: close, X-Foo`
+the proxy cannot see that `X-Foo` was named, and forwards it. Backends are
+trusted (Phase 8 threat model). A test pins the current behaviour and
+skips itself if Go starts keeping the header.
+
+### Header size limit below the `bufio.Reader`
+
+`HeaderLimitReader` sits between the connection and its `bufio.Reader` and
+fails reads once `MaxHeaderBytes` have been read for the current header block.
+Without it, `ReadRequest` buffers a header line of any length. Bytes the
+`bufio.Reader` already held (read ahead with the previous request) are not
+counted, so the effective limit can be exceeded by up to its 4 KiB size. When
+the limit is hit, the proxy answers 431 instead of 400.
+
+### Connection tracker and the cap
+
+The tracker is a set of open connections behind a mutex plus atomic counters,
+shared by the accept loop and the connection goroutines. It is counted under
+the plan's "in-flight counters" shared state. Over the cap (default 10,000),
+connections are accepted and closed at once. The rejected alternative, not
+accepting until a slot frees, leaves them in the kernel backlog, where they
+time out without the proxy seeing them and make shutdown harder.
+
+Accept errors other than a closed listener pause the loop for 10 ms. Phase 8
+replaces this with a backoff for running out of file descriptors. Shutdown in
+Phase 1 closes everything at once; Phase 7 adds the drain.
+
+### Test backend changes
+
+`/bytes?n=N[&chunked=1]` streams a fixed pattern that tests regenerate with
+`testbackend.Pattern`, so a 1 GB body costs no memory to send or check. `/echo`
+reads the first piece of the body before writing its headers, because Go's
+server sends `100 Continue` only when a handler reads before replying, and it
+flushes each piece so the echo streams during the upload.
+
+### Results
+
+Measured on WSL2 (kernel 6.6, 22 CPUs), Go 1.27.4:
+
+- 1 GB read at about 100 MB/s through a proxy that moves it at 3.4 GB/s
+  unthrottled: heap in use grew by under 1 MiB.
+- 200 clients × 50 keep-alive requests: goroutines 4 → 207 → 4, fds 9 → 9.
+- `wrk -c 200 -d 30s` against a `-race` build: see
+  `bench/phase1/results/wrk-race.txt`.

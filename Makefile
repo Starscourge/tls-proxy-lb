@@ -6,7 +6,7 @@ COMPOSE   := docker compose -f lab/docker-compose.yml
 UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
-        lab-up lab-down lab-check netem-check clean
+        lab-up lab-down lab-check netem-check wrk-race clean
 
 all: build test lint
 
@@ -51,6 +51,10 @@ lab-check:
 
 netem-check:
 	lab/netem-check.sh
+
+# Phase 1 "Done when": wrk -c 200 -d 30s against a -race build.
+wrk-race:
+	bench/phase1/wrk-race.sh
 
 clean:
 	rm -rf $(BIN)

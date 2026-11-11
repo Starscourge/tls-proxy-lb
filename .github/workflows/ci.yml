@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STATICCHECK_VERSION: v0.8.2
+
+jobs:
+  go:
+    name: build, lint, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
+
+      - name: build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION} ./...
+
+      - name: unit tests (race)
+        run: go test -race $(go list ./... | grep -v /test/integration)
+
+      - name: integration tests (race)
+        run: go test -race -v ./test/integration/...
+
+  lab:
+    name: docker lab and netem
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: lab check
+        run: lab/check-lab.sh
+
+      - name: logs on failure
+        if: failure()
+        run: docker compose -f lab/docker-compose.yml logs
+
+      - name: tear down
+        if: always()
+        run: docker compose -f lab/docker-compose.yml down

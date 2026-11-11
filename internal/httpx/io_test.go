@@ -142,8 +142,11 @@ func TestBodyAbortUnblocksRead(t *testing.T) {
 	body.Abort()
 	select {
 	case err := <-errc:
-		if err == nil {
-			t.Fatal("read succeeded after Abort")
+		if !errors.Is(err, ErrAborted) {
+			t.Fatalf("blocked read returned %v, want ErrAborted", err)
+		}
+		if !errors.Is(body.Err(), ErrAborted) {
+			t.Fatalf("Err = %v, want ErrAborted", body.Err())
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Abort did not unblock the read")

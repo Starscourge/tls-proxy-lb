@@ -69,6 +69,11 @@ func (b *Body) Read(p []byte) (int, error) {
 	case err == io.EOF:
 		b.eof = true
 	case err != nil:
+		// A failure after Abort is the abort's doing (usually the past
+		// deadline it set), not the peer's.
+		if b.aborted.Load() {
+			err = ErrAborted
+		}
 		b.setErr(err)
 	}
 	return n, err
@@ -98,7 +103,8 @@ func (b *Body) N() int64 { return b.n }
 // EOF reports whether the body was read to its end.
 func (b *Body) EOF() bool { return b.eof }
 
-// Err returns the first read error other than io.EOF, or nil.
+// Err returns the first read error other than io.EOF, or nil. It is
+// ErrAborted if reads failed because of Abort.
 func (b *Body) Err() error { return b.err }
 
 // DeadlineWriter writes to a connection, pushing its write deadline Timeout

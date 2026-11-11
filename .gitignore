@@ -1,0 +1,16 @@
+# Local-only planning files (see CLAUDE.md)
+CLAUDE.md
+PLAN.md
+*:Zone.Identifier
+.claude/
+
+# Build output
+/bin/
+
+# Generated certificates and keys
+lab/certs/
+
+# Test and profiling artefacts
+*.test
+*.out
+*.prof

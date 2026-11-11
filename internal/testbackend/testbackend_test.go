@@ -190,6 +190,65 @@ func TestEchoChunked(t *testing.T) {
 	}
 }
 
+func TestBytes(t *testing.T) {
+	_, base, c := start(t, Config{})
+	for _, tc := range []struct {
+		query   string
+		n       int64
+		chunked bool
+	}{
+		{"n=0", 0, false},
+		{"n=10", 10, false},
+		{"n=200000", 200000, false},
+		{"n=10&chunked=1", 10, true},
+		{"n=200000&chunked=1", 200000, true},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			resp, body := get(t, c, base+"/bytes?"+tc.query)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status %d", resp.StatusCode)
+			}
+			want, _ := io.ReadAll(Pattern(tc.n))
+			if body != string(want) {
+				t.Fatalf("body differs from Pattern(%d): got %d bytes", tc.n, len(body))
+			}
+			isChunked := len(resp.TransferEncoding) == 1 && resp.TransferEncoding[0] == "chunked"
+			if isChunked != tc.chunked {
+				t.Fatalf("Transfer-Encoding %v, want chunked=%v", resp.TransferEncoding, tc.chunked)
+			}
+			if !tc.chunked && resp.ContentLength != tc.n {
+				t.Fatalf("Content-Length %d, want %d", resp.ContentLength, tc.n)
+			}
+		})
+	}
+	for _, q := range []string{"", "n=-1", "n=x"} {
+		if resp, _ := get(t, c, base+"/bytes?"+q); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%q: status %d, want 400", q, resp.StatusCode)
+		}
+	}
+}
+
+func TestPatternIsStable(t *testing.T) {
+	a, _ := io.ReadAll(Pattern(200000))
+	// Read the same prefix in odd-sized pieces.
+	var b []byte
+	r := Pattern(200000)
+	buf := make([]byte, 7777)
+	for {
+		n, err := r.Read(buf)
+		b = append(b, buf[:n]...)
+		if err != nil {
+			break
+		}
+	}
+	if !bytes.Equal(a, b) || len(a) != 200000 {
+		t.Fatal("Pattern differs between read sizes")
+	}
+	if !bytes.Equal(a[:65521], a[65521:2*65521]) {
+		t.Fatal("Pattern does not repeat its block")
+	}
+}
+
 func TestDelay(t *testing.T) {
 	_, base, c := start(t, Config{Delay: 100 * time.Millisecond})
 	t0 := time.Now()

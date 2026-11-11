@@ -12,6 +12,8 @@
 //	/healthz  200 "ok"
 //	/echo     200 with the request body streamed back unchanged
 //	/slow     200 after sleeping ?ms=N milliseconds (default 5000)
+//	/bytes    200 with ?n=N bytes of a fixed pattern (see Pattern), sent with
+//	          Content-Length, or chunked with &chunked=1
 //
 // Config.Delay and Config.FailRate apply to every endpoint, /healthz included,
 // so a backend started with FailRate 1 also fails its health checks.
@@ -200,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/echo", s.echo)
 	mux.HandleFunc("/slow", s.slow)
+	mux.HandleFunc("/bytes", s.bytes)
 	mux.HandleFunc("/", s.root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.enter() {
@@ -321,6 +324,62 @@ func (s *Server) slow(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, "slow response from %s after %v\n", s.cfg.Name, d)
+}
+
+// bytes streams n bytes of Pattern. The pattern block is shared and never
+// written, so a 1 GB response costs no memory.
+func (s *Server) bytes(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.ParseInt(r.URL.Query().Get("n"), 10, 64)
+	if err != nil || n < 0 {
+		http.Error(w, "n must be a non-negative integer", http.StatusBadRequest)
+		return
+	}
+	chunked := r.URL.Query().Get("chunked") == "1"
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if !chunked {
+		w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	if chunked {
+		// Flushing before the body forces chunked framing even when the
+		// whole body would fit in the server's buffer.
+		_ = http.NewResponseController(w).Flush()
+	}
+	if _, err := io.Copy(w, Pattern(n)); err != nil {
+		s.cfg.Logger.Debug("bytes copy stopped", "backend", s.cfg.Name, "err", err)
+	}
+}
+
+// patternBlock is the repeating unit of Pattern: a fixed pseudo-random block
+// whose length is prime, so the pattern never lines up with buffer sizes.
+var patternBlock = func() []byte {
+	b := make([]byte, 65521)
+	x := uint32(2463534242)
+	for i := range b {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		b[i] = byte(x)
+	}
+	return b
+}()
+
+// Pattern returns a reader of the first n bytes that /bytes?n=N serves, so
+// tests can check a body byte for byte without storing it.
+func Pattern(n int64) io.Reader {
+	return io.LimitReader(&patternReader{}, n)
+}
+
+type patternReader struct{ off int }
+
+func (p *patternReader) Read(b []byte) (int, error) {
+	n := 0
+	for n < len(b) {
+		c := copy(b[n:], patternBlock[p.off:])
+		n += c
+		p.off = (p.off + c) % len(patternBlock)
+	}
+	return n, nil
 }
 
 // sleep waits for d or until ctx is done. It reports whether the full

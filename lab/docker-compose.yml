@@ -29,6 +29,14 @@ services:
       dockerfile: lab/Dockerfile
       target: proxy
     image: tlslab/proxy:dev
+    # Phase 1: one hardcoded backend. Pools from a config file come in Phase 2.
+    command: ["-listen", ":8080", "-backend", "10.0.0.11:8000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+      start_period: 2s
     networks:
       lab:
         ipv4_address: 10.0.0.10

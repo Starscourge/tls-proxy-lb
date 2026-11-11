@@ -1,0 +1,6 @@
+# Only cmd/, internal/ and the module files are needed to build the images.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/

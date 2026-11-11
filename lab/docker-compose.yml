@@ -1,0 +1,76 @@
+# The lab: the proxy, three test backends and a load generator, each in its
+# own container on one bridge network with fixed addresses.
+#
+#   docker compose -f lab/docker-compose.yml up -d --build --wait
+#   docker compose -f lab/docker-compose.yml exec backend1 tc qdisc add dev eth0 root netem delay 100ms
+#
+# Backends have NET_ADMIN so tc/netem can shape their traffic.
+name: tlslab
+
+x-backend: &backend
+  build:
+    context: ..
+    dockerfile: lab/Dockerfile
+    target: testbackend
+  image: tlslab/testbackend:dev
+  cap_add: [NET_ADMIN]
+  restart: "no"
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/healthz"]
+    interval: 2s
+    timeout: 1s
+    retries: 10
+    start_period: 2s
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+      target: proxy
+    image: tlslab/proxy:dev
+    networks:
+      lab:
+        ipv4_address: 10.0.0.10
+    depends_on:
+      backend1: {condition: service_healthy}
+      backend2: {condition: service_healthy}
+      backend3: {condition: service_healthy}
+
+  backend1:
+    <<: *backend
+    command: ["-port", "8000", "-name", "backend1"]
+    networks:
+      lab:
+        ipv4_address: 10.0.0.11
+
+  backend2:
+    <<: *backend
+    command: ["-port", "8000", "-name", "backend2"]
+    networks:
+      lab:
+        ipv4_address: 10.0.0.12
+
+  backend3:
+    <<: *backend
+    command: ["-port", "8000", "-name", "backend3"]
+    networks:
+      lab:
+        ipv4_address: 10.0.0.13
+
+  loadgen:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+      target: loadgen
+    image: tlslab/loadgen:dev
+    init: true
+    networks:
+      lab:
+        ipv4_address: 10.0.0.20
+
+networks:
+  lab:
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24

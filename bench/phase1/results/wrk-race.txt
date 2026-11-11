@@ -1,0 +1,31 @@
+# Phase 1: wrk against a -race build
+date:       2026-11-11T13:46:34Z
+commit:     2362459
+go:         go1.27.4 linux/amd64
+kernel:     Linux 6.6.87.2-microsoft-standard-WSL2
+cpus:       22
+command:    wrk -t4 -c200 -d30s --latency http://127.0.0.1:18080/
+backend:    testbackend on 127.0.0.1:18000, GET / (14-byte body)
+
+Running 30s test @ http://127.0.0.1:18080/
+  4 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    18.83ms   20.66ms 203.33ms   85.17%
+    Req/Sec     3.73k   413.22     4.95k    71.33%
+  Latency Distribution
+     50%    9.95ms
+     75%   30.85ms
+     90%   45.90ms
+     99%   86.26ms
+  445618 requests in 30.04s, 62.05MB read
+Requests/sec:  14835.15
+Transfer/sec:      2.07MB
+
+access log lines:     445812 (non-200: 0)
+data race reports:    0
+proxy exit code:      0 (after SIGTERM)
+proxy fds:            baseline 7, after load 7
+proxy threads after:  33
+proxy RSS:            baseline 23584 kB, at end of load 171272 kB (race detector shadow memory included)
+
+RESULT: PASS

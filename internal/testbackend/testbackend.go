@@ -10,7 +10,7 @@
 //
 //	/         200 with a short text body naming the backend (catch-all path)
 //	/healthz  200 "ok"
-//	/echo     200 with the request body streamed back unchanged
+//	/echo     200 with the request body streamed back unchanged, flushed per read
 //	/slow     200 after sleeping ?ms=N milliseconds (default 5000)
 //	/bytes    200 with ?n=N bytes of a fixed pattern (see Pattern), sent with
 //	          Content-Length, or chunked with &chunked=1
@@ -303,9 +303,33 @@ func (s *Server) echo(w http.ResponseWriter, r *http.Request) {
 	}
 	// Allow the response to start while the request body is still arriving.
 	_ = http.NewResponseController(w).EnableFullDuplex()
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, r.Body); err != nil {
-		s.cfg.Logger.Warn("echo copy failed", "backend", s.cfg.Name, "err", err)
+	// Read the first piece before replying: that read is what makes the
+	// server send "100 Continue" to a client that asked for it. Writing the
+	// headers first would make the server treat the body as not sent. Each
+	// piece is flushed, so the echo streams while the upload continues.
+	rc := http.NewResponseController(w)
+	buf := make([]byte, 32<<10)
+	wroteHeader := false
+	for {
+		n, err := r.Body.Read(buf)
+		if !wroteHeader {
+			w.WriteHeader(http.StatusOK)
+			wroteHeader = true
+		}
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				s.cfg.Logger.Warn("echo write failed", "backend", s.cfg.Name, "err", werr)
+				return
+			}
+			_ = rc.Flush()
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			s.cfg.Logger.Warn("echo read failed", "backend", s.cfg.Name, "err", err)
+			return
+		}
 	}
 }
 

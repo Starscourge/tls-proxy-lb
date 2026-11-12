@@ -20,6 +20,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 )
 
 // runMainEnv, when set, makes the test binary run main() with the arguments
@@ -119,7 +120,7 @@ func TestParseFlags(t *testing.T) {
 func TestCheckConfig(t *testing.T) {
 	good := writeFile(t, goodConfig)
 	var out, errOut bytes.Buffer
-	if code := checkConfig(good, &out, &errOut); code != exitOK || !strings.Contains(out.String(), ": ok (1 listeners, 1 routes, 1 pools)") {
+	if code := checkConfig(good, &out, &errOut); code != exitOK || !strings.Contains(out.String(), ": ok (1 listeners, 1 routes, 1 pools, 0 certificates)") {
 		t.Fatalf("good config: code %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
 
@@ -141,6 +142,50 @@ func TestCheckConfig(t *testing.T) {
 	}
 	if n := strings.Count(strings.TrimSpace(errOut.String()), "\n") + 1; n != 3 {
 		t.Errorf("%d lines on stderr, want 3", n)
+	}
+}
+
+// TestCheckConfigCertificates: certificates are loaded by the check, a bad
+// one fails it with its field named, and one about to expire passes with a
+// warning on stderr.
+func TestCheckConfigCertificates(t *testing.T) {
+	dir := t.TempDir()
+	ca := tlstest.NewCA(t)
+	ca.WriteFiles(t, dir, "a", tlstest.LeafOptions{NotAfter: time.Now().Add(72 * time.Hour)}, "a.test")
+	ca.WriteFiles(t, dir, "default", tlstest.LeafOptions{NotAfter: time.Now().Add(365 * 24 * time.Hour)}, "*.test")
+	src := `
+[[listener]]
+address = "127.0.0.1:0"
+
+[[route]]
+host = "%s"
+pool = "p"
+cert = "a.crt"
+key  = "a.key"
+
+[tls]
+default_cert = "default.crt"
+default_key  = "default.key"
+
+[pool.p]
+backends = [{ address = "127.0.0.1:8000" }]
+`
+	path := filepath.Join(dir, "proxy.toml")
+	for _, tc := range []struct {
+		host, stdout, stderr string
+		code                 int
+	}{
+		{"a.test", ": ok (1 listeners, 1 routes, 1 pools, 2 certificates)", "warning: a.test: certificate expires at", exitOK},
+		{"b.test", "", `route[0].cert: certificate is not valid for "b.test"`, exitFailed},
+	} {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf(src, tc.host)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+		code := checkConfig(path, &out, &errOut)
+		if code != tc.code || !strings.Contains(out.String(), tc.stdout) || !strings.Contains(errOut.String(), tc.stderr) {
+			t.Errorf("host %s: code %d stdout %q stderr %q", tc.host, code, out.String(), errOut.String())
+		}
 	}
 }
 
@@ -201,31 +246,53 @@ func startBackend(t *testing.T, name string) string {
 
 func parse(t *testing.T, src string) *config.Config {
 	t.Helper()
-	c, err := config.Parse("test.toml", []byte(src))
+	return parseFile(t, "test.toml", src)
+}
+
+// parseFile parses src as if read from path, so relative certificate paths
+// resolve against path's directory.
+func parseFile(t *testing.T, path, src string) *config.Config {
+	t.Helper()
+	c, err := config.Parse(path, []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return c
 }
 
-// TestRunServesEveryListener: two listeners, each routing by host, then a
-// clean stop on cancel.
+// TestRunServesEveryListener: an HTTPS, a plain HTTP and a redirect
+// listener, each doing its job and routing by host, then a clean stop on
+// cancel.
 func TestRunServesEveryListener(t *testing.T) {
 	one, two := startBackend(t, "one"), startBackend(t, "two")
-	cfg := parse(t, fmt.Sprintf(`
+	dir := t.TempDir()
+	ca := tlstest.NewCA(t)
+	ca.WriteFiles(t, dir, "a", tlstest.LeafOptions{}, "a.test")
+	ca.WriteFiles(t, dir, "default", tlstest.LeafOptions{}, "*.test")
+	cfg := parseFile(t, filepath.Join(dir, "proxy.toml"), fmt.Sprintf(`
 default_pool = "pb"
 
 [[listener]]
 address = "127.0.0.1:0"
-mode = "http"
 
 [[listener]]
 address = "127.0.0.1:0"
 mode = "http"
 
+[[listener]]
+address = "127.0.0.1:0"
+mode = "redirect"
+redirect_port = 8443
+
 [[route]]
 host = "a.test"
 pool = "pa"
+cert = "a.crt"
+key  = "a.key"
+
+[tls]
+default_cert = "default.crt"
+default_key  = "default.key"
 
 [pool.pa]
 backends = [{ address = %q }]
@@ -245,27 +312,54 @@ backends = [{ address = %q }]
 	case err := <-errc:
 		t.Fatalf("run exited early: %v", err)
 	}
-	if len(addrs) != 2 {
-		t.Fatalf("listening on %v, want 2 addresses", addrs)
+	if len(addrs) != 3 {
+		t.Fatalf("listening on %v, want 3 addresses", addrs)
 	}
 
-	tr := &http.Transport{}
+	// Every host name resolves to the listener being tested, so URLs can
+	// carry the host and the client sends it as SNI.
+	var target string
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, target)
+		},
+		TLSClientConfig: ca.ClientConfig(""),
+	}
 	defer tr.CloseIdleConnections()
-	c := &http.Client{Transport: tr, Timeout: 5 * time.Second}
-	for _, addr := range addrs {
+	c := &http.Client{
+		Transport:     tr,
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	do := func(url string) *http.Response {
+		t.Helper()
+		resp, err := c.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+	// The transport pools connections by URL host, so idle ones are
+	// dropped whenever the target listener changes.
+	for i, scheme := range []string{"https", "http"} {
+		tr.CloseIdleConnections()
+		target = addrs[i]
 		for host, want := range map[string]string{"a.test": "one", "other.test": "two"} {
-			req, _ := http.NewRequest("GET", "http://"+addr+"/", nil)
-			req.Host = host
-			resp, err := c.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			resp := do(scheme + "://" + host + "/")
 			if resp.StatusCode != 200 || resp.Header.Get("X-Backend") != want {
-				t.Fatalf("%s Host %s: status %d X-Backend %q, want %s", addr, host, resp.StatusCode, resp.Header.Get("X-Backend"), want)
+				t.Fatalf("%s://%s: status %d X-Backend %q, want %s", scheme, host, resp.StatusCode, resp.Header.Get("X-Backend"), want)
+			}
+			if scheme == "https" && resp.TLS == nil {
+				t.Fatalf("%s: no TLS", host)
 			}
 		}
+	}
+	tr.CloseIdleConnections()
+	target = addrs[2]
+	if resp := do("http://a.test/x"); resp.StatusCode != http.StatusPermanentRedirect || resp.Header.Get("Location") != "https://a.test:8443/x" {
+		t.Fatalf("redirect listener: status %d Location %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	tr.CloseIdleConnections()
 

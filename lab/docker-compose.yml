@@ -29,8 +29,10 @@ services:
       dockerfile: lab/Dockerfile
       target: proxy
     image: tlslab/proxy:dev
-    # Phase 1: one hardcoded backend. Pools from a config file come in Phase 2.
-    command: ["-listen", ":8080", "-backend", "10.0.0.11:8000"]
+    # Pools and routes over the three backends; see proxy.toml.
+    command: ["-config", "/etc/proxy/proxy.toml"]
+    volumes:
+      - ./proxy.toml:/etc/proxy/proxy.toml:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 2s

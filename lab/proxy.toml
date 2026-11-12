@@ -1,0 +1,52 @@
+# Proxy config for the lab, mounted at /etc/proxy/proxy.toml.
+# Check it with: docker compose -f lab/docker-compose.yml exec proxy \
+#   /usr/local/bin/proxy -config /etc/proxy/proxy.toml -check-config
+#
+# Phase 2: plain HTTP on 8080. Phase 3 moves to 8443 with TLS and adds the
+# cert and key for each route.
+
+# Hosts with no route, including the container healthcheck's 127.0.0.1.
+default_pool = "all"
+
+[[listener]]
+address = "0.0.0.0:8080"
+
+[[route]]
+host = "a.test"
+pool = "pool_a"
+
+[[route]]
+host = "b.test"
+pool = "pool_b"
+
+[pool.all]
+algorithm = "round_robin"
+backends  = [
+  { address = "10.0.0.11:8000" },
+  { address = "10.0.0.12:8000" },
+  { address = "10.0.0.13:8000" },
+]
+
+[pool.pool_a]
+algorithm = "least_conn"
+backends  = [
+  { address = "10.0.0.11:8000" },
+  { address = "10.0.0.12:8000" },
+  { address = "10.0.0.13:8000" },
+]
+
+[pool.pool_b]
+algorithm = "consistent_hash"
+hash_key  = "header:X-User-Id"
+backends  = [
+  { address = "10.0.0.11:8000" },
+  { address = "10.0.0.12:8000" },
+  { address = "10.0.0.13:8000" },
+]
+
+[timeouts]
+header_read_ms       = 5000
+upstream_connect_ms  = 1000
+upstream_response_ms = 10000
+idle_ms              = 60000
+client_io_ms         = 60000

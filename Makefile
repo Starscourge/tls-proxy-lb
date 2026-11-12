@@ -6,7 +6,7 @@ COMPOSE   := docker compose -f lab/docker-compose.yml
 UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
-        lab-up lab-down lab-check netem-check wrk-race clean
+        check-config lab-up lab-down lab-check netem-check wrk-race bench-lb clean
 
 all: build test lint
 
@@ -38,6 +38,11 @@ fmt:
 
 certs:
 	lab/gen-certs.sh lab/certs
+
+# Validate a config file like nginx -t (default: the lab's).
+CONFIG ?= lab/proxy.toml
+check-config:
+	$(GO) run ./cmd/proxy -config $(CONFIG) -check-config
 
 lab-up:
 	$(COMPOSE) up -d --build --wait

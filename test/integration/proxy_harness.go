@@ -2,11 +2,14 @@ package integration
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,11 +21,30 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 )
+
+// Schemes are the listener modes the Phase 1 and 2 tests run under.
+var Schemes = []string{config.ModeHTTP, config.ModeHTTPS}
+
+// ForEachScheme runs fn as one subtest per scheme, so a test written once
+// covers plain HTTP and HTTPS.
+func ForEachScheme(t *testing.T, fn func(t *testing.T, scheme string)) {
+	t.Helper()
+	for _, scheme := range Schemes {
+		t.Run(scheme, func(t *testing.T) { fn(t, scheme) })
+	}
+}
 
 // ProxyOptions configures StartProxy and StartProxyConfig. Zero fields take
 // the proxy's defaults, so a test sets only what it is about.
 type ProxyOptions struct {
+	// Scheme is "http" (the default) or "https". For "https" the harness
+	// issues a CA and a default certificate for *.test, so every host under
+	// .test completes a handshake unless the config gives it a certificate
+	// of its own.
+	Scheme string
 	// Timeouts are written to the config's [timeouts] table, in whole
 	// milliseconds.
 	Timeouts       config.Timeouts
@@ -37,10 +59,20 @@ type Proxy struct {
 	*conn.Server
 	// Snapshot is the config the proxy serves, for reaching its pools.
 	Snapshot *config.Snapshot
-	// ConfigPath is the generated config file.
+	// ConfigPath is the generated config file; Dir is its directory, where
+	// certificates can be written for the config to name.
 	ConfigPath string
-	Addr       string
-	URL        string
+	Dir        string
+	// Scheme is "http" or "https".
+	Scheme string
+	// CA signed the default certificate (HTTPS only). Tests may issue more
+	// certificates with it.
+	CA   *tlstest.CA
+	Addr string
+	// URL is Scheme://a.test:port. Clients from Client resolve every host
+	// to the proxy, so the host in a URL is what the proxy sees as SNI and
+	// Host.
+	URL string
 }
 
 // StartProxy starts a proxy whose default pool holds backend alone. It is
@@ -55,15 +87,39 @@ func StartProxy(t testing.TB, backend string, opts ProxyOptions) *Proxy {
 // random localhost port and the [timeouts] and [limits] tables from opts, so
 // body must not contain those. The file goes through config.Load like the
 // real one. The proxy is closed when the test ends.
+//
+// For HTTPS the harness also appends a [tls] table, so body must not
+// contain one. Relative certificate paths in body resolve against the
+// config's directory; use StartProxyDir to write certificates there first.
 func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 	t.Helper()
+	return StartProxyDir(t, t.TempDir(), nil, body, opts)
+}
+
+// StartProxyDir is StartProxyConfig with the config written into dir, so
+// body can name certificate files the test wrote there, signed by ca (a
+// new CA if nil).
+func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts ProxyOptions) *Proxy {
+	t.Helper()
+	if opts.Scheme == "" {
+		opts.Scheme = config.ModeHTTP
+	}
 	var src strings.Builder
 	src.WriteString(body)
-	src.WriteString("\n[[listener]]\naddress = \"127.0.0.1:0\"\nmode = \"http\"\n\n[timeouts]\n")
+	fmt.Fprintf(&src, "\n[[listener]]\naddress = \"127.0.0.1:0\"\nmode = %q\n", opts.Scheme)
+	if opts.Scheme == config.ModeHTTPS {
+		if ca == nil {
+			ca = tlstest.NewCA(t)
+		}
+		ca.WriteFiles(t, dir, "harness-default", tlstest.LeafOptions{}, "*.test")
+		src.WriteString("\n[tls]\ndefault_cert = \"harness-default.crt\"\ndefault_key = \"harness-default.key\"\n")
+	}
+	src.WriteString("\n[timeouts]\n")
 	for _, f := range []struct {
 		key string
 		d   time.Duration
 	}{
+		{"handshake_ms", opts.Timeouts.Handshake},
 		{"header_read_ms", opts.Timeouts.HeaderRead},
 		{"idle_ms", opts.Timeouts.Idle},
 		{"client_io_ms", opts.Timeouts.ClientIO},
@@ -82,7 +138,7 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 		fmt.Fprintf(&src, "max_header_bytes = %d\n", opts.MaxHeaderBytes)
 	}
 
-	path := filepath.Join(t.TempDir(), "proxy.toml")
+	path := filepath.Join(dir, "proxy.toml")
 	if err := os.WriteFile(path, []byte(src.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +154,11 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(t.Output(), nil))
 	}
-	p := &conn.Proxy{Config: config.NewStore(snap), Logger: logger}
+	store := config.NewStore(snap)
+	p := &conn.Proxy{Config: store, Logger: logger}
+	if opts.Scheme == config.ModeHTTPS {
+		p.TLS = tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs })
+	}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("proxy: %v", err)
 	}
@@ -116,7 +176,77 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 		}
 	})
 	addr := ln.Addr().String()
-	return &Proxy{Server: srv, Snapshot: snap, ConfigPath: path, Addr: addr, URL: "http://" + addr}
+	return &Proxy{
+		Server: srv, Snapshot: snap, ConfigPath: path, Dir: dir, Scheme: opts.Scheme, CA: ca, Addr: addr,
+		URL: opts.Scheme + "://a.test:" + port(addr),
+	}
+}
+
+func port(addr string) string {
+	_, p, _ := net.SplitHostPort(addr)
+	return p
+}
+
+// URLFor returns Scheme://host:port, the proxy's URL under another host.
+func (p *Proxy) URLFor(host string) string {
+	return p.Scheme + "://" + host + ":" + port(p.Addr)
+}
+
+// Client returns an HTTP client that sends every request to the proxy,
+// whatever host its URL names, and for HTTPS trusts only the harness CA.
+// The URL's host is the SNI. Idle connections are closed when the test
+// ends.
+func (p *Proxy) Client(t testing.TB) *http.Client {
+	t.Helper()
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, p.Addr)
+		},
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   64,
+	}
+	if p.CA != nil {
+		tr.TLSClientConfig = p.CA.ClientConfig("")
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr, Timeout: 60 * time.Second}
+}
+
+// Dial opens a connection to the proxy for writing raw HTTP: plain TCP, or
+// for HTTPS a TLS connection with host as SNI, handshake done. tune, if
+// set, adjusts the TCP socket before the handshake. The connection is
+// closed when the test ends.
+func (p *Proxy) Dial(t testing.TB, host string, tune func(*net.TCPConn)) net.Conn {
+	t.Helper()
+	c, err := p.DialErr(host, tune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
+}
+
+// DialErr is Dial for goroutines other than the test's: it returns the
+// error, and the caller closes the connection.
+func (p *Proxy) DialErr(host string, tune func(*net.TCPConn)) (net.Conn, error) {
+	c, err := net.DialTimeout("tcp", p.Addr, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if tune != nil {
+		tune(c.(*net.TCPConn))
+	}
+	if p.Scheme != config.ModeHTTPS {
+		return c, nil
+	}
+	tc := tls.Client(c, p.CA.ClientConfig(host))
+	tc.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := tc.Handshake(); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("TLS handshake with SNI %q: %w", host, err)
+	}
+	tc.SetDeadline(time.Time{})
+	return tc, nil
 }
 
 // Backends renders a pool's backends key for the given addresses.

@@ -38,6 +38,7 @@ func assertZeroAllocs(t *testing.T, bal Balancer, r *RequestInfo, healthy []*Bac
 func TestEmptyHealthyPicksNil(t *testing.T) {
 	for name, bal := range map[string]Balancer{
 		"round_robin": &RoundRobinBalancer{},
+		"least_conn":  &LeastConnBalancer{},
 	} {
 		if b := bal.Pick(&RequestInfo{}, nil); b != nil {
 			t.Errorf("%s: picked %v from no backends", name, b.Addr)
@@ -76,21 +77,81 @@ func TestRoundRobinOrder(t *testing.T) {
 	}
 }
 
+func TestLeastConnPicksMinimum(t *testing.T) {
+	bs := backends(3)
+	bs[0].inflight.Store(5)
+	bs[1].inflight.Store(2)
+	bs[2].inflight.Store(7)
+	lc := &LeastConnBalancer{}
+	for i := range 10 {
+		if got := lc.Pick(nil, bs); got != bs[1] {
+			t.Fatalf("pick %d = %s (in flight %d), want %s", i, got.Addr, got.InFlight(), bs[1].Addr)
+		}
+	}
+}
+
+// TestLeastConnTiesRotate: with nothing in flight, every backend ties, and
+// the rotating start spreads sequential picks exactly evenly.
+func TestLeastConnTiesRotate(t *testing.T) {
+	bs := backends(3)
+	lc := &LeastConnBalancer{}
+	var picks []*Backend
+	for range 300 {
+		picks = append(picks, lc.Pick(nil, bs))
+	}
+	for _, b := range bs {
+		if got := counts(picks)[b]; got != 100 {
+			t.Errorf("%s got %d picks, want 100", b.Addr, got)
+		}
+	}
+}
+
+// TestLeastConnTiesAmongMinimum: ties are broken among the minimum only.
+func TestLeastConnTiesAmongMinimum(t *testing.T) {
+	bs := backends(4)
+	bs[0].inflight.Store(3)
+	bs[2].inflight.Store(3)
+	lc := &LeastConnBalancer{}
+	got := map[*Backend]int{}
+	for range 40 {
+		got[lc.Pick(nil, bs)]++
+	}
+	if got[bs[0]] != 0 || got[bs[2]] != 0 || got[bs[1]] != 20 || got[bs[3]] != 20 {
+		t.Fatalf("split %d/%d/%d/%d, want 0/20/0/20", got[bs[0]], got[bs[1]], got[bs[2]], got[bs[3]])
+	}
+}
+
+// TestLeastConnFollowsLoad: picks that are held (Acquire without Release)
+// keep the in-flight counts within one of each other.
+func TestLeastConnFollowsLoad(t *testing.T) {
+	bs := backends(3)
+	lc := &LeastConnBalancer{}
+	for range 30 {
+		lc.Pick(nil, bs).Acquire()
+	}
+	for _, b := range bs {
+		if b.InFlight() != 10 {
+			t.Errorf("%s has %d in flight, want 10", b.Addr, b.InFlight())
+		}
+	}
+}
+
 func TestPickZeroAllocs(t *testing.T) {
 	bs := backends(5)
 	r := &RequestInfo{ClientIP: "192.0.2.7", Header: http.Header{}}
 	assertZeroAllocs(t, &RoundRobinBalancer{}, r, bs)
+	assertZeroAllocs(t, &LeastConnBalancer{}, r, bs)
 }
 
 func TestNewPool(t *testing.T) {
-	p, err := NewPool("p", []string{"a:1", "b:2"}, PoolOptions{Algorithm: RoundRobin})
+	p, err := NewPool("p", []string{"a:1", "b:2"}, PoolOptions{Algorithm: LeastConn})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(p.Backends) != 2 || p.Backends[1].Addr != "b:2" {
 		t.Fatalf("backends %+v", p.Backends)
 	}
-	if _, ok := p.Balancer.(*RoundRobinBalancer); !ok {
+	if _, ok := p.Balancer.(*LeastConnBalancer); !ok {
 		t.Fatalf("balancer %T", p.Balancer)
 	}
 	if b := p.Pick(&RequestInfo{}); b == nil {
@@ -135,3 +196,10 @@ func BenchmarkRoundRobinParallel(b *testing.B) {
 	benchPickParallel(b, &RoundRobinBalancer{}, &RequestInfo{}, 10)
 }
 
+func BenchmarkLeastConn(b *testing.B) {
+	benchPick(b, &LeastConnBalancer{}, &RequestInfo{}, 10)
+}
+
+func BenchmarkLeastConnParallel(b *testing.B) {
+	benchPickParallel(b, &LeastConnBalancer{}, &RequestInfo{}, 10)
+}

@@ -29,10 +29,11 @@ type Algorithm string
 // The supported algorithms.
 const (
 	RoundRobin Algorithm = "round_robin"
+	LeastConn  Algorithm = "least_conn"
 )
 
 // Algorithms lists the supported algorithms, for error messages.
-var Algorithms = []Algorithm{RoundRobin}
+var Algorithms = []Algorithm{RoundRobin, LeastConn}
 
 // Pool is a named, fixed set of backends and the balancer that spreads
 // requests across them. A pool does not change once built.
@@ -60,6 +61,8 @@ func NewPool(name string, addrs []string, opts PoolOptions) (*Pool, error) {
 	switch opts.Algorithm {
 	case RoundRobin, "":
 		p.Balancer = &RoundRobinBalancer{}
+	case LeastConn:
+		p.Balancer = &LeastConnBalancer{}
 	default:
 		return nil, fmt.Errorf("lb: pool %q: unknown algorithm %q", name, opts.Algorithm)
 	}

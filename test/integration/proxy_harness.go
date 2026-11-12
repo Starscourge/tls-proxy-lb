@@ -102,13 +102,13 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 	if err := p.Validate(); err != nil {
 		t.Fatalf("proxy: %v", err)
 	}
-	srv := conn.NewServer(p, snap.Limits.MaxConns, logger)
+	srv := conn.NewServer(snap.Limits.MaxConns, logger)
 	ln, err := net.Listen("tcp", snap.Listeners[0])
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() { errc <- srv.Serve(ln, p) }()
 	t.Cleanup(func() {
 		srv.Close()
 		if err := <-errc; !errors.Is(err, conn.ErrServerClosed) {

@@ -108,7 +108,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 		addrs = append(addrs, ln.Addr().String())
 	}
 
-	srv := conn.NewServer(p, snap.Limits.MaxConns, logger)
+	srv := conn.NewServer(snap.Limits.MaxConns, logger)
 	logger.Info("proxy listening", "version", version, "addrs", addrs,
 		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
 		"max_conns", snap.Limits.MaxConns)
@@ -118,7 +118,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 
 	errc := make(chan error, len(lns))
 	for _, ln := range lns {
-		go func() { errc <- srv.Serve(ln) }()
+		go func() { errc <- srv.Serve(ln, p) }()
 	}
 	pending := len(lns)
 	var serveErr error

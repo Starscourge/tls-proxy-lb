@@ -21,13 +21,13 @@ func (h *echoHandler) ServeConn(_ context.Context, c *TrackedConn) {
 
 func startServer(t *testing.T, h Handler, maxConns int) (*Server, string, chan error) {
 	t.Helper()
-	s := NewServer(h, maxConns, nil)
+	s := NewServer(maxConns, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- s.Serve(ln) }()
+	go func() { errc <- s.Serve(ln, h) }()
 	return s, ln.Addr().String(), errc
 }
 
@@ -129,10 +129,10 @@ func TestServerConnectionCap(t *testing.T) {
 }
 
 func TestServeAfterClose(t *testing.T) {
-	s := NewServer(&echoHandler{}, 0, nil)
+	s := NewServer(0, nil)
 	s.Close()
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	if err := s.Serve(ln); !errors.Is(err, ErrServerClosed) {
+	if err := s.Serve(ln, &echoHandler{}); !errors.Is(err, ErrServerClosed) {
 		t.Fatalf("Serve after Close = %v", err)
 	}
 	if _, err := ln.Accept(); !errors.Is(err, net.ErrClosed) {
@@ -140,16 +140,21 @@ func TestServeAfterClose(t *testing.T) {
 	}
 }
 
+// TestServerTwoListeners: each listener hands its connections to its own
+// handler, and Close stops both.
 func TestServerTwoListeners(t *testing.T) {
-	h := &echoHandler{}
-	s, addr1, errc1 := startServer(t, h, 0)
+	h1, h2 := &echoHandler{}, &echoHandler{}
+	s, addr1, errc1 := startServer(t, h1, 0)
 	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
 	errc2 := make(chan error, 1)
-	go func() { errc2 <- s.Serve(ln2) }()
-	for _, addr := range []string{addr1, ln2.Addr().String()} {
+	go func() { errc2 <- s.Serve(ln2, h2) }()
+	for _, addr := range []string{addr1, ln2.Addr().String(), ln2.Addr().String()} {
 		if err := roundTrip(t, dial(t, addr), "z"); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if h1.served.Load() != 1 || h2.served.Load() != 2 {
+		t.Fatalf("handlers served %d and %d connections, want 1 and 2", h1.served.Load(), h2.served.Load())
 	}
 	s.Close()
 	for _, errc := range []chan error{errc1, errc2} {

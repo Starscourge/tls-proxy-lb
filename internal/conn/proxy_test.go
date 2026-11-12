@@ -108,13 +108,13 @@ func startProxySnapshot(t *testing.T, snap *config.Snapshot) (string, *Server, *
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(p, 0, nil)
+	s := NewServer(0, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- s.Serve(ln) }()
+	go func() { errc <- s.Serve(ln, p) }()
 	t.Cleanup(func() { s.Close(); <-errc })
 	return ln.Addr().String(), s, logs
 }

@@ -23,12 +23,14 @@ type Handler interface {
 
 // Server runs accept loops and one goroutine per client connection.
 //
+// Each listener has its own Handler, so one Server can run HTTPS, plain HTTP
+// and redirect listeners under one connection cap.
+//
 // Goroutine ownership: each Serve call is one accept loop, stopped by Close
 // closing its listener. Each accepted connection gets one goroutine,
 // registered in the Tracker and stopped by its handler returning or by Close
 // closing the connection. Close waits for both kinds to finish.
 type Server struct {
-	handler Handler
 	tracker *Tracker
 	logger  *slog.Logger
 
@@ -41,15 +43,14 @@ type Server struct {
 	loops     sync.WaitGroup
 }
 
-// NewServer returns a server that hands connections to h and admits at most
-// maxConns at once (no cap if <= 0). A nil logger discards.
-func NewServer(h Handler, maxConns int, logger *slog.Logger) *Server {
+// NewServer returns a server that admits at most maxConns connections at
+// once across all its listeners (no cap if <= 0). A nil logger discards.
+func NewServer(maxConns int, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		handler:   h,
 		tracker:   NewTracker(maxConns),
 		logger:    logger,
 		ctx:       ctx,
@@ -64,10 +65,10 @@ func (s *Server) Tracker() *Tracker { return s.tracker }
 // ErrServerClosed is returned by Serve after Close.
 var ErrServerClosed = errors.New("conn: server closed")
 
-// Serve accepts connections on ln until Close, then returns ErrServerClosed.
-// It takes ownership of ln. Any other return is an accept error that ended
+// Serve accepts connections on ln and hands each to h until Close, then
+// returns ErrServerClosed. It takes ownership of ln. Any other return is an accept error that ended
 // the loop; ln is closed in every case.
-func (s *Server) Serve(ln net.Listener) error {
+func (s *Server) Serve(ln net.Listener, h Handler) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -109,14 +110,14 @@ func (s *Server) Serve(ln net.Listener) error {
 			c.Close()
 			continue
 		}
-		go s.serveConn(tc)
+		go s.serveConn(tc, h)
 	}
 }
 
-func (s *Server) serveConn(tc *TrackedConn) {
+func (s *Server) serveConn(tc *TrackedConn, h Handler) {
 	defer s.tracker.Remove(tc)
 	defer tc.Close()
-	s.handler.ServeConn(s.ctx, tc)
+	h.ServeConn(s.ctx, tc)
 }
 
 func (s *Server) isClosed() bool {

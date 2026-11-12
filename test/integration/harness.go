@@ -35,6 +35,10 @@ type Backend struct {
 type BackendOptions struct {
 	Delay    time.Duration
 	FailRate float64
+	// Quiet drops the backend's log lines instead of writing them to the
+	// test output, for tests that send thousands of requests. The in-memory
+	// request log is kept either way.
+	Quiet bool
 }
 
 // StartBackends starts n backends named b1..bn, each recording its requests
@@ -51,11 +55,15 @@ func StartBackends(t testing.TB, n int, opts BackendOptions) []*Backend {
 // StartBackend starts one named backend. It is shut down when the test ends.
 func StartBackend(t testing.TB, name string, opts BackendOptions) *Backend {
 	t.Helper()
+	logger := slog.New(slog.NewTextHandler(t.Output(), nil))
+	if opts.Quiet {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	srv, err := testbackend.New(testbackend.Config{
 		Name:     name,
 		Delay:    opts.Delay,
 		FailRate: opts.FailRate,
-		Logger:   slog.New(slog.NewTextHandler(t.Output(), nil)),
+		Logger:   logger,
 		Record:   true,
 	})
 	if err != nil {

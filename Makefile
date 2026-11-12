@@ -44,11 +44,15 @@ CONFIG ?= lab/proxy.toml
 check-config:
 	$(GO) run ./cmd/proxy -config $(CONFIG) -check-config
 
+# The proxy container runs as you, so it can read the 0600 keys in lab/certs.
+LAB_ENV := LAB_UID=$$(id -u) LAB_GID=$$(id -g)
+
 lab-up:
-	$(COMPOSE) up -d --build --wait
+	test -s lab/certs/default.test.crt || lab/gen-certs.sh lab/certs
+	$(LAB_ENV) $(COMPOSE) up -d --build --wait
 
 lab-down:
-	$(COMPOSE) down
+	$(LAB_ENV) $(COMPOSE) down
 
 # Phase 0 "Done when": lab comes up, backends answer, netem adds ~100 ms.
 lab-check:

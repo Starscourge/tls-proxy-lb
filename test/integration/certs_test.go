@@ -7,11 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestGenCertsScript runs lab/gen-certs.sh and checks that each server
-// certificate loads as a key pair and verifies against the generated CA for
-// its own hostname only.
+// certificate loads as a key pair, verifies against the generated CA for
+// its own hostname only and lasts at most 398 days.
 func TestGenCertsScript(t *testing.T) {
 	for _, bin := range []string{"bash", "openssl"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -48,7 +49,7 @@ func TestGenCertsScript(t *testing.T) {
 	if !roots.AppendCertsFromPEM(caPEM) {
 		t.Fatal("ca.crt holds no certificate")
 	}
-	hosts := []string{"a.test", "b.test"}
+	hosts := []string{"a.test", "b.test", "default.test"}
 	for _, host := range hosts {
 		pair, err := tls.LoadX509KeyPair(filepath.Join(dir, host+".crt"), filepath.Join(dir, host+".key"))
 		if err != nil {
@@ -57,6 +58,10 @@ func TestGenCertsScript(t *testing.T) {
 		leaf := pair.Leaf
 		if leaf == nil {
 			t.Fatalf("%s: no parsed leaf", host)
+		}
+		// Browsers, and testssl.sh, reject server certificates over 398 days.
+		if d := leaf.NotAfter.Sub(leaf.NotBefore); d > 398*24*time.Hour {
+			t.Errorf("%s: valid for %v, over 398 days", host, d)
 		}
 		for _, name := range hosts {
 			_, err := leaf.Verify(x509.VerifyOptions{

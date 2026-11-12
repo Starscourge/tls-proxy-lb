@@ -1,7 +1,11 @@
 # The lab: the proxy, three test backends and a load generator, each in its
 # own container on one bridge network with fixed addresses.
 #
-#   docker compose -f lab/docker-compose.yml up -d --build --wait
+#   lab/gen-certs.sh lab/certs
+#   LAB_UID=$(id -u) LAB_GID=$(id -g) docker compose -f lab/docker-compose.yml up -d --build --wait
+#
+# (make lab-up does both.) The proxy runs as LAB_UID:LAB_GID so it can read
+# the private keys in lab/certs, which stay mode 0600 and owned by you.
 #   docker compose -f lab/docker-compose.yml exec backend1 tc qdisc add dev eth0 root netem delay 100ms
 #
 # Backends have NET_ADMIN so tc/netem can shape their traffic.
@@ -29,12 +33,17 @@ services:
       dockerfile: lab/Dockerfile
       target: proxy
     image: tlslab/proxy:dev
+    user: "${LAB_UID:-10001}:${LAB_GID:-10001}"
     # Pools and routes over the three backends; see proxy.toml.
     command: ["-config", "/etc/proxy/proxy.toml"]
     volumes:
       - ./proxy.toml:/etc/proxy/proxy.toml:ro
+      - ./certs:/etc/proxy/certs:ro
+    # busybox wget sends the IP literal as SNI, which no route names, so this
+    # gets the default certificate and the default pool. It would verify the
+    # certificate against the system roots, hence --no-check-certificate.
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1:8443/healthz"]
       interval: 2s
       timeout: 1s
       retries: 10
@@ -75,6 +84,8 @@ services:
       target: loadgen
     image: tlslab/loadgen:dev
     init: true
+    volumes:
+      - ./certs/ca.crt:/work/ca.crt:ro
     networks:
       lab:
         ipv4_address: 10.0.0.20

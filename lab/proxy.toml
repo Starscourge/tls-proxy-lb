@@ -1,24 +1,39 @@
-# Proxy config for the lab, mounted at /etc/proxy/proxy.toml.
+# Proxy config for the lab, mounted at /etc/proxy/proxy.toml, with the
+# certificates from lab/gen-certs.sh mounted at /etc/proxy/certs.
 # Check it with: docker compose -f lab/docker-compose.yml exec proxy \
 #   /usr/local/bin/proxy -config /etc/proxy/proxy.toml -check-config
 #
-# Phase 2: plain HTTP on 8080. Phase 3 moves to 8443 with TLS and adds the
-# cert and key for each route.
+# HTTPS on 8443: SNI picks the certificate and the pool. Plain HTTP on 8080
+# redirects to it.
 
-# Hosts with no route, including the container healthcheck's 127.0.0.1.
+# Hosts with no route, including the container healthcheck (no SNI).
 default_pool = "all"
 
 [[listener]]
-address = "0.0.0.0:8080"
-mode    = "http"
+address = "0.0.0.0:8443"
+mode    = "https"
+
+[[listener]]
+address       = "0.0.0.0:8080"
+mode          = "redirect"
+redirect_port = 8443
 
 [[route]]
 host = "a.test"
 pool = "pool_a"
+cert = "certs/a.test.crt"
+key  = "certs/a.test.key"
 
 [[route]]
 host = "b.test"
 pool = "pool_b"
+cert = "certs/b.test.crt"
+key  = "certs/b.test.key"
+
+# Served to clients without SNI and to names with no route.
+[tls]
+default_cert = "certs/default.test.crt"
+default_key  = "certs/default.test.key"
 
 [pool.all]
 algorithm = "round_robin"
@@ -46,6 +61,7 @@ backends  = [
 ]
 
 [timeouts]
+handshake_ms         = 5000
 header_read_ms       = 5000
 upstream_connect_ms  = 1000
 upstream_response_ms = 10000

@@ -2,17 +2,20 @@
 # Creates a local CA and server certificates for the lab hostnames.
 #
 # Usage: lab/gen-certs.sh [OUT_DIR] [HOST...]
-#   OUT_DIR defaults to lab/certs; HOSTs default to a.test b.test.
+#   OUT_DIR defaults to lab/certs; HOSTs default to a.test b.test
+#   default.test (the proxy's default certificate in the lab).
 #
 # The CA (ca.crt, ca.key) is reused if it already exists, so a trust store
 # that holds it stays valid; server certificates are re-issued on every run.
-# Keys are ECDSA P-256. Nothing here is fit for production use.
+# Keys are ECDSA P-256. Server certificates last 397 days, the most browsers
+# accept (and testssl.sh does not flag). Nothing here is fit for production
+# use.
 set -euo pipefail
 
 out="${1:-$(dirname "$0")/certs}"
 shift || true
 hosts=("$@")
-[[ ${#hosts[@]} -gt 0 ]] || hosts=(a.test b.test)
+[[ ${#hosts[@]} -gt 0 ]] || hosts=(a.test b.test default.test)
 
 command -v openssl >/dev/null || { echo "gen-certs: openssl not found" >&2; exit 1; }
 mkdir -p "$out"
@@ -49,7 +52,7 @@ authorityKeyIdentifier=keyid
 subjectKeyIdentifier=hash
 EXT
   openssl x509 -req -in "$tmp/$host.csr" -CA "$ca_crt" -CAkey "$ca_key" \
-    -CAcreateserial -CAserial "$tmp/ca.srl" -sha256 -days 825 \
+    -CAcreateserial -CAserial "$tmp/ca.srl" -sha256 -days 397 \
     -extfile "$tmp/$host.ext" -out "$crt" 2>/dev/null
   echo "gen-certs: issued $crt"
 done

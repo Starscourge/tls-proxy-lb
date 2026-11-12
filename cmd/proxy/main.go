@@ -1,7 +1,13 @@
 // Command proxy is the TLS-terminating reverse proxy and load balancer.
 //
-// Phase 1: a plain-HTTP proxy to one backend given on the command line.
-// The config file, pools and TLS arrive in Phases 2 and 3.
+// Phase 2: plain HTTP on every [[listener]] in the config file, routed by
+// Host to pools balanced by round-robin, least-connections or consistent
+// hashing. TLS arrives in Phase 3.
+//
+// Usage:
+//
+//	proxy -config proxy.toml
+//	proxy -config proxy.toml -check-config
 package main
 
 import (
@@ -18,86 +24,119 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
-	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+// Exit codes.
+const (
+	exitOK     = 0
+	exitFailed = 1 // bad config, or the proxy failed while running
+	exitUsage  = 2 // bad flags
+)
+
 type options struct {
-	listen         string
-	backend        string
-	maxConns       int
-	maxHeaderBytes int
+	configPath  string
+	checkConfig bool
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var o options
-	fs.StringVar(&o.listen, "listen", ":8080", "address to accept client connections on")
-	fs.StringVar(&o.backend, "backend", "", "backend host:port every request is sent to (required)")
-	fs.IntVar(&o.maxConns, "max-conns", 10000, "maximum open client connections; more are closed at accept")
-	fs.IntVar(&o.maxHeaderBytes, "max-header-bytes", config.DefaultLimits().MaxHeaderBytes, "maximum request line plus headers; larger requests get 431")
+	fs.StringVar(&o.configPath, "config", "", "path to the TOML config file (required)")
+	fs.BoolVar(&o.checkConfig, "check-config", false, "check the config file, print the result and exit: 0 if valid, 1 if not")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
 	if fs.NArg() > 0 {
 		return o, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
-	if o.backend == "" {
-		return o, errors.New("-backend is required")
-	}
-	if o.maxConns <= 0 {
-		return o, fmt.Errorf("-max-conns must be positive, got %d", o.maxConns)
-	}
-	if o.maxHeaderBytes <= 0 {
-		return o, fmt.Errorf("-max-header-bytes must be positive, got %d", o.maxHeaderBytes)
+	if o.configPath == "" {
+		return o, errors.New("-config is required")
 	}
 	return o, nil
 }
 
-// run serves until ctx is cancelled or the listener fails. ready, if
-// non-nil, receives the bound address once the listener is open.
-func run(ctx context.Context, o options, logger *slog.Logger, ready chan<- string) error {
-	if _, _, err := net.SplitHostPort(o.backend); err != nil {
-		return fmt.Errorf("-backend %q: %w", o.backend, err)
+// checkConfig loads the config at path and reports on it, like nginx -t:
+// one line on stdout and exitOK if it is valid, every problem on stderr and
+// exitFailed if not.
+func checkConfig(path string, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(path)
+	if err == nil {
+		_, err = config.NewSnapshot(cfg)
 	}
-	snap, err := config.NewSnapshot(&config.Config{
-		Listeners:   []string{o.listen},
-		DefaultPool: "default",
-		Pools:       []config.Pool{{Name: "default", Algorithm: lb.RoundRobin, Backends: []string{o.backend}}},
-		Timeouts:    config.DefaultTimeouts(),
-		Limits:      config.Limits{MaxConns: o.maxConns, MaxHeaderBytes: o.maxHeaderBytes},
-	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitFailed
+	}
+	fmt.Fprintf(stdout, "%s: ok (%d listeners, %d routes, %d pools)\n", path, len(cfg.Listeners), len(cfg.Routes), len(cfg.Pools))
+	return exitOK
+}
+
+// run serves cfg until ctx is cancelled or a listener fails. ready, if
+// non-nil, receives the bound listener addresses, in config order, once
+// every listener is open.
+//
+// Goroutines: one accept loop per listener, each started here and stopped
+// by srv.Close closing its listener; run waits for all of them to return.
+func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready chan<- []string) error {
+	snap, err := config.NewSnapshot(cfg)
 	if err != nil {
 		return err
 	}
 	p := &conn.Proxy{Config: config.NewStore(snap), Logger: logger}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", o.listen)
-	if err != nil {
+	if err := p.Validate(); err != nil {
 		return err
-	}
-	srv := conn.NewServer(p, o.maxConns, logger)
-	logger.Info("proxy listening", "version", version, "addr", ln.Addr().String(),
-		"backend", o.backend, "max_conns", o.maxConns)
-	if ready != nil {
-		ready <- ln.Addr().String()
 	}
 
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	// Open every listener before serving any, so a bad address fails
+	// startup instead of leaving a half-open proxy.
+	var lc net.ListenConfig
+	lns := make([]net.Listener, 0, len(snap.Listeners))
+	addrs := make([]string, 0, len(snap.Listeners))
+	for _, a := range snap.Listeners {
+		ln, err := lc.Listen(ctx, "tcp", a)
+		if err != nil {
+			for _, l := range lns {
+				l.Close()
+			}
+			return fmt.Errorf("listen %s: %w", a, err)
+		}
+		lns = append(lns, ln)
+		addrs = append(addrs, ln.Addr().String())
+	}
+
+	srv := conn.NewServer(p, snap.Limits.MaxConns, logger)
+	logger.Info("proxy listening", "version", version, "addrs", addrs,
+		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
+		"max_conns", snap.Limits.MaxConns)
+	if ready != nil {
+		ready <- addrs
+	}
+
+	errc := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func() { errc <- srv.Serve(ln) }()
+	}
+	pending := len(lns)
+	var serveErr error
 	select {
 	case err := <-errc:
-		srv.Close()
-		return fmt.Errorf("serve: %w", err)
+		pending--
+		serveErr = fmt.Errorf("serve: %w", err)
 	case <-ctx.Done():
+		logger.Info("proxy shutting down", "open_conns", srv.Tracker().Len())
 	}
-	logger.Info("proxy shutting down", "open_conns", srv.Tracker().Len())
 	srv.Close()
-	if err := <-errc; !errors.Is(err, conn.ErrServerClosed) {
-		return err
+	for range pending {
+		if err := <-errc; !errors.Is(err, conn.ErrServerClosed) && serveErr == nil {
+			serveErr = fmt.Errorf("serve: %w", err)
+		}
+	}
+	if serveErr != nil {
+		return serveErr
 	}
 	logger.Info("proxy stopped")
 	return nil
@@ -107,16 +146,24 @@ func main() {
 	o, err := parseFlags(os.Args[1:], os.Stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
+			os.Exit(exitOK)
 		}
 		fmt.Fprintln(os.Stderr, "proxy:", err)
-		os.Exit(2)
+		os.Exit(exitUsage)
+	}
+	if o.checkConfig {
+		os.Exit(checkConfig(o.configPath, os.Stdout, os.Stderr))
+	}
+	cfg, err := config.Load(o.configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitFailed)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, o, logger, nil); err != nil {
+	if err := run(ctx, cfg, logger, nil); err != nil {
 		logger.Error("proxy failed", "err", err)
-		os.Exit(1)
+		os.Exit(exitFailed)
 	}
 }

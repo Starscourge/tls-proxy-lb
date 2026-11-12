@@ -41,8 +41,17 @@ echo "== building (proxy with -race)"
 
 "$tmp/testbackend" -listen 127.0.0.1 -port "$bport" -name b1 >"$tmp/backend.log" 2>&1 &
 pids+=($!)
+cat >"$tmp/proxy.toml" <<TOML
+default_pool = "default"
+
+[[listener]]
+address = "127.0.0.1:$pport"
+
+[pool.default]
+backends = [{ address = "127.0.0.1:$bport" }]
+TOML
 GORACE="log_path=$tmp/race exitcode=66" \
-  "$tmp/proxy" -listen "127.0.0.1:$pport" -backend "127.0.0.1:$bport" >"$tmp/access.log" 2>"$tmp/proxy.err" &
+  "$tmp/proxy" -config "$tmp/proxy.toml" >"$tmp/access.log" 2>"$tmp/proxy.err" &
 ppid=$!
 pids+=($ppid)
 

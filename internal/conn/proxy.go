@@ -144,6 +144,9 @@ type clientConn struct {
 	// plain HTTP or a client that sent none.
 	sni     string
 	tlsInfo tlsInfo
+	// redirectPort, if non-zero, makes the connection answer every request
+	// with a redirect to HTTPS on that port instead of proxying it.
+	redirectPort int
 
 	// t and maxHeader come from the snapshot of the current request, or of
 	// the previous one while waiting for the next. A new connection starts
@@ -232,6 +235,9 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 
 	if status, reason := httpx.CheckRequest(req); status != 0 {
 		return cc.reject(cc.newRecord(start, req), req, status, reason)
+	}
+	if cc.redirectPort != 0 {
+		return cc.redirect(snap, req, start)
 	}
 	return cc.proxy(ctx, snap, req, start)
 }

@@ -106,3 +106,20 @@ func WriteError(w *bufio.Writer, status int, head bool) error {
 	}
 	return w.Flush()
 }
+
+// WriteRedirect writes a redirect to location that closes the connection,
+// and flushes. head omits the body. location must already be a valid URL;
+// it is written as is.
+func WriteRedirect(w *bufio.Writer, status int, location string, head bool) error {
+	body := fmt.Sprintf("%d %s: %s\n", status, http.StatusText(status), location)
+	fmt.Fprintf(w, "HTTP/1.1 %03d %s\r\n"+
+		"Location: %s\r\n"+
+		"Content-Type: text/plain; charset=utf-8\r\n"+
+		"Content-Length: %d\r\n"+
+		"Connection: close\r\n\r\n",
+		status, http.StatusText(status), location, len(body))
+	if !head {
+		w.WriteString(body)
+	}
+	return w.Flush()
+}

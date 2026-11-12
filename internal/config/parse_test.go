@@ -1,0 +1,267 @@
+package config
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"go.uber.org/goleak"
+
+	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+)
+
+func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
+
+const fullConfig = `
+default_pool = "pool_b"
+
+[[listener]]
+address = "0.0.0.0:8080"
+
+[[listener]]
+address = "127.0.0.1:0"
+
+[[route]]
+host = "A.Test."
+pool = "pool_a"
+cert = "certs/a.test.crt"
+key  = "certs/a.test.key"
+
+[[route]]
+host = "[::1]"
+pool = "pool_b"
+
+[pool.pool_a]
+algorithm = "least_conn"
+backends  = [
+  { address = "10.0.0.11:8000" },
+  { address = "10.0.0.12:8000" },
+]
+
+[pool.pool_b]
+algorithm = "consistent_hash"
+hash_key  = "header:x-user-id"
+backends  = [{ address = "backend_3:8000" }]
+
+[pool.pool_c]
+backends = [{ address = "[::1]:9000" }]
+
+[timeouts]
+header_read_ms       = 2500
+upstream_connect_ms  = 300
+upstream_response_ms = 4000
+idle_ms              = 30000
+client_io_ms         = 15000
+
+[limits]
+max_conns        = 500
+max_header_bytes = 8192
+`
+
+func TestParseFull(t *testing.T) {
+	c, err := Parse("test.toml", []byte(fullConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &Config{
+		Listeners: []string{"0.0.0.0:8080", "127.0.0.1:0"},
+		Routes: []Route{
+			{Host: "a.test", Pool: "pool_a", Cert: "certs/a.test.crt", Key: "certs/a.test.key"},
+			{Host: "::1", Pool: "pool_b"},
+		},
+		DefaultPool: "pool_b",
+		Pools: []Pool{
+			{Name: "pool_a", Algorithm: lb.LeastConn, Backends: []string{"10.0.0.11:8000", "10.0.0.12:8000"}},
+			{Name: "pool_b", Algorithm: lb.ConsistentHash, HashHeader: "X-User-Id", Backends: []string{"backend_3:8000"}},
+			{Name: "pool_c", Algorithm: lb.RoundRobin, Backends: []string{"[::1]:9000"}},
+		},
+		Timeouts: Timeouts{
+			HeaderRead:       2500 * time.Millisecond,
+			Idle:             30 * time.Second,
+			ClientIO:         15 * time.Second,
+			UpstreamConnect:  300 * time.Millisecond,
+			UpstreamResponse: 4 * time.Second,
+		},
+		Limits: Limits{MaxConns: 500, MaxHeaderBytes: 8192},
+	}
+	if !reflect.DeepEqual(c, want) {
+		t.Fatalf("got\n%+v\nwant\n%+v", c, want)
+	}
+}
+
+const minimal = `
+[[listener]]
+address = ":8080"
+
+[[route]]
+host = "a.test"
+pool = "p"
+
+[pool.p]
+backends = [{ address = "127.0.0.1:8000" }]
+`
+
+func TestParseDefaults(t *testing.T) {
+	c, err := Parse("min.toml", []byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() {
+		t.Fatalf("timeouts %+v limits %+v, want defaults", c.Timeouts, c.Limits)
+	}
+	if c.Pools[0].Algorithm != lb.RoundRobin || c.DefaultPool != "" {
+		t.Fatalf("pool %+v default %q", c.Pools[0], c.DefaultPool)
+	}
+	// Explicit hash_key = "client_ip" is the same as leaving it out.
+	c, err = Parse("ch.toml", []byte(strings.Replace(minimal, "[pool.p]", "[pool.p]\nalgorithm = \"consistent_hash\"\nhash_key = \"client_ip\"", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Pools[0].HashHeader != "" {
+		t.Fatalf("client_ip gave header %q", c.Pools[0].HashHeader)
+	}
+}
+
+// A default_pool alone, with no routes, is a valid catch-all config.
+func TestParseDefaultPoolOnly(t *testing.T) {
+	src := "default_pool = \"p\"\n" + strings.Replace(minimal, "[[route]]\nhost = \"a.test\"\npool = \"p\"\n", "", 1)
+	if _, err := Parse("d.toml", []byte(src)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const base = `
+[[listener]]
+address = ":8080"
+`
+
+const pool = `
+[pool.p]
+backends = [{ address = "127.0.0.1:8000" }]
+`
+
+const route = `
+[[route]]
+host = "a.test"
+pool = "p"
+`
+
+// TestParseRejects: each invalid file is rejected with an error that names
+// the field at fault.
+func TestParseRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string // expected in the error, after "bad.toml: "
+	}{
+		{"syntax", base + "[pool.p\n", `line 5 (last key "listener"): expected '.' or ']' to end table name`},
+		{"wrong type", base + route + pool + "[timeouts]\nidle_ms = \"60s\"\n", `line 12 (last key "timeouts.idle_ms"): incompatible types`},
+		{"unknown top-level key", "listen = \":80\"\n" + base + route + pool, "listen: unknown field"},
+		{"unknown pool key", base + route + "[pool.p]\nalgoritm = \"least_conn\"\nbackends = [{ address = \"a:1\" }]\n", "pool.p.algoritm: unknown field"},
+		{"unknown backend key", base + route + "[pool.p]\nbackends = [{ adress = \"a:1\" }]\n", "pool.p.backends.adress: unknown field"},
+		{"unknown table", base + route + pool + "[timeout]\nidle_ms = 5\n", "timeout.idle_ms: unknown field"},
+		{"no listener", route + pool, "listener: at least one [[listener]] is required"},
+		{"listener no address", "[[listener]]\n" + route + pool, "listener[0].address: is required"},
+		{"listener no port", "[[listener]]\naddress = \"0.0.0.0\"\n" + route + pool, `listener[0].address: "0.0.0.0" is not host:port: missing port in address`},
+		{"listener named port", "[[listener]]\naddress = \":http\"\n" + route + pool, `listener[0].address: ":http": port "http" is not a number from 0 to 65535`},
+		{"listener duplicate", base + base + route + pool, `listener[1].address: ":8080" is also listener[0]`},
+		{"no pool", base + route, "pool: at least one [pool.<name>] is required"},
+		{"pool name", base + "[[route]]\nhost = \"a.test\"\npool = \"p q\"\n[pool.\"p q\"]\nbackends = [{ address = \"a:1\" }]\n", `pool.p q: pool name "p q" may use only`},
+		{"no backends", base + route + "[pool.p]\nalgorithm = \"round_robin\"\n", "pool.p.backends: at least one backend is required"},
+		{"empty backends", base + route + "[pool.p]\nbackends = []\n", "pool.p.backends: at least one backend is required"},
+		{"backend no address", base + route + "[pool.p]\nbackends = [{ address = \"a:1\" }, {}]\n", "pool.p.backends[1].address: is required"},
+		{"backend no port", base + route + "[pool.p]\nbackends = [{ address = \"a:1\" }, { address = \"10.0.0.12\" }]\n", `pool.p.backends[1].address: "10.0.0.12" is not host:port: missing port in address`},
+		{"backend port 0", base + route + "[pool.p]\nbackends = [{ address = \"a:0\" }]\n", `pool.p.backends[0].address: "a:0": port "0" is not a number from 1 to 65535`},
+		{"backend port range", base + route + "[pool.p]\nbackends = [{ address = \"a:65536\" }]\n", `pool.p.backends[0].address: "a:65536": port "65536"`},
+		{"backend no host", base + route + "[pool.p]\nbackends = [{ address = \":8000\" }]\n", `pool.p.backends[0].address: ":8000": host is empty`},
+		{"backend bad host", base + route + "[pool.p]\nbackends = [{ address = \"a..b:1\" }]\n", `pool.p.backends[0].address: "a..b:1": hostname labels`},
+		{"backend duplicate", base + route + "[pool.p]\nbackends = [{ address = \"a:1\" }, { address = \"a:1\" }]\n", `pool.p.backends[1].address: "a:1" is also backends[0]`},
+		{"algorithm", base + route + "[pool.p]\nalgorithm = \"random\"\nbackends = [{ address = \"a:1\" }]\n", `pool.p.algorithm: "random" is not one of round_robin, least_conn, consistent_hash`},
+		{"hash_key without hashing", base + route + "[pool.p]\nhash_key = \"client_ip\"\nbackends = [{ address = \"a:1\" }]\n", `pool.p.hash_key: is only valid with algorithm = "consistent_hash"`},
+		{"hash_key form", base + route + "[pool.p]\nalgorithm = \"consistent_hash\"\nhash_key = \"cookie:id\"\nbackends = [{ address = \"a:1\" }]\n", `pool.p.hash_key: "cookie:id" must be "client_ip" or "header:<Header-Name>"`},
+		{"hash_key header", base + route + "[pool.p]\nalgorithm = \"consistent_hash\"\nhash_key = \"header:X User\"\nbackends = [{ address = \"a:1\" }]\n", `pool.p.hash_key: "X User" is not a valid header name`},
+		{"hash_key empty header", base + route + "[pool.p]\nalgorithm = \"consistent_hash\"\nhash_key = \"header:\"\nbackends = [{ address = \"a:1\" }]\n", `pool.p.hash_key: "" is not a valid header name`},
+		{"no route or default", base + pool, "route: at least one [[route]] or a default_pool is required"},
+		{"route no host", base + "[[route]]\npool = \"p\"\n" + pool, "route[0].host: is required"},
+		{"route host with port", base + "[[route]]\nhost = \"a.test:8443\"\npool = \"p\"\n" + pool, `route[0].host: "a.test:8443" must not include a port`},
+		{"route bad host", base + "[[route]]\nhost = \"a test\"\npool = \"p\"\n" + pool, `route[0].host: "a test": hostname contains ' '`},
+		{"route bad brackets", base + "[[route]]\nhost = \"[10.0.0.1]\"\npool = \"p\"\n" + pool, `route[0].host: "[10.0.0.1]" is not a bracketed IPv6 address`},
+		{"route duplicate after normalising", base + route + "[[route]]\nhost = \"A.TEST.\"\npool = \"p\"\n" + pool, `route[1].host: "a.test" is also route[0]`},
+		{"route no pool", base + "[[route]]\nhost = \"a.test\"\n" + pool, "route[0].pool: is required"},
+		{"route unknown pool", base + "[[route]]\nhost = \"a.test\"\npool = \"q\"\n" + pool, `route[0].pool: no pool named "q"`},
+		{"default pool unknown", "default_pool = \"q\"\n" + base + route + pool, `default_pool: no pool named "q"`},
+		{"timeout zero", base + route + pool + "[timeouts]\nidle_ms = 0\n", "timeouts.idle_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"timeout negative", base + route + pool + "[timeouts]\nheader_read_ms = -5\n", "timeouts.header_read_ms: must be from 1"},
+		{"timeout huge", base + route + pool + "[timeouts]\nupstream_response_ms = 86400001\n", "timeouts.upstream_response_ms: must be from 1"},
+		{"max_conns zero", base + route + pool + "[limits]\nmax_conns = 0\n", "limits.max_conns: must be from 1 to 10000000, got 0"},
+		{"max_header_bytes huge", base + route + pool + "[limits]\nmax_header_bytes = 1073741824\n", "limits.max_header_bytes: must be from 1 to 16777216"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Parse("bad.toml", []byte(tc.src))
+			if err == nil {
+				t.Fatalf("accepted:\n%s\ngot %+v", tc.src, c)
+			}
+			if !strings.Contains(err.Error(), "bad.toml: "+tc.want) {
+				t.Fatalf("error\n%v\nwant it to contain\nbad.toml: %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseReportsEveryError: problems are collected, not stopped at the
+// first, so one -check-config run shows them all.
+func TestParseReportsEveryError(t *testing.T) {
+	src := "default_pool = \"nope\"\n" + base +
+		"[[route]]\nhost = \"a.test:1\"\npool = \"p\"\n" +
+		"[pool.p]\nalgorithm = \"x\"\nbackends = [{ address = \"a\" }]\n" +
+		"[timeouts]\nidle_ms = 0\n"
+	_, err := Parse("bad.toml", []byte(src))
+	var fields []string
+	for _, e := range err.(interface{ Unwrap() []error }).Unwrap() {
+		var fe *FieldError
+		if !errors.As(e, &fe) {
+			t.Fatalf("%v is not a *FieldError", e)
+		}
+		fields = append(fields, fe.Field)
+	}
+	want := []string{"timeouts.idle_ms", "pool.p.algorithm", "pool.p.backends[0].address", "route[0].host", "default_pool"}
+	if !reflect.DeepEqual(fields, want) {
+		t.Fatalf("fields %q, want %q", fields, want)
+	}
+}
+
+func TestLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.toml")
+	if err := os.WriteFile(path, []byte(minimal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.HasPrefix(err.Error(), path+": ") {
+		t.Fatalf("error %v, want it prefixed with the path", err)
+	}
+	if _, err := Load(filepath.Join(dir, "missing.toml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
+	}
+}
+
+func TestTimeoutsValidate(t *testing.T) {
+	if err := DefaultTimeouts().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	to := DefaultTimeouts()
+	to.ClientIO = 0
+	if err := to.Validate(); err == nil || !strings.Contains(err.Error(), "ClientIO") {
+		t.Fatalf("got %v", err)
+	}
+}

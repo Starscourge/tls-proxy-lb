@@ -2,4 +2,7 @@ module github.com/Starscourge/tls-proxy-lb
 
 go 1.27.4
 
-require go.uber.org/goleak v1.3.0 // indirect
+require (
+	github.com/BurntSushi/toml v1.6.0
+	go.uber.org/goleak v1.3.0
+)

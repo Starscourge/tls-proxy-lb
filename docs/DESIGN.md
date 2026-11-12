@@ -285,3 +285,220 @@ Measured on WSL2 (kernel 6.6, 22 CPUs), Go 1.27.4:
 - 200 clients × 50 keep-alive requests: goroutines 4 → 207 → 4, fds 9 → 9.
 - `wrk -c 200 -d 30s` against a `-race` build: see
   `bench/phase1/results/wrk-race.txt`.
+
+## Phase 2: Config, pools and load balancing
+
+### The config file replaces the command-line settings
+
+The proxy takes `-config` and nothing else besides `-check-config`. The Phase
+1 flags (`-listen`, `-backend`, `-max-conns`, `-max-header-bytes`) moved
+into the file as `[[listener]]`, `[pool.<name>]` and `[limits]`, so there is
+one source of truth for what a running proxy does. The `[timeouts]` table
+also has `client_io_ms` (see Phase 1). `cert` and `key` on a route are
+parsed and kept but not read until Phase 3.
+
+Exit codes: 0 valid (or a clean stop), 1 a bad config or a failure while
+running, 2 bad flags. `-check-config` prints one summary line on stdout when
+the file is valid, as `nginx -t` does.
+
+### Strict decoding, every error reported with its field
+
+Unknown keys are errors (`MetaData.Undecoded`), so a typo such as
+`algoritm` fails instead of silently falling back to the default. Each
+problem is a `FieldError` that names the field's path, such as
+`pool.pool_a.backends[1].address`, and validation collects all of them
+rather than stopping at the first, so one `-check-config` run lists
+everything. Syntax and type errors come from the TOML decoder and carry the
+line and the last key read. The rejected alternative, failing on the first
+problem, is simpler but makes fixing a file one round trip per mistake.
+
+A missing timeout or limit takes its default; an explicit `0` is an error
+(`MetaData.IsDefined` tells them apart), because a zero timeout would mean
+"fail at once", which is never what someone writing `0` intends. Numbers
+have upper bounds (a day for timeouts, 10 M connections, 16 MiB of headers)
+so a slip of the keyboard cannot ask for something absurd.
+
+Listeners may use port 0 (any free port) and may repeat it; tests use this.
+Backends may not. Hostnames may contain `_`, which DNS forbids but Docker
+service names use.
+
+### Packages: `conn` → `config` → `lb`
+
+`config` builds `lb` pools, and `conn` reads `config` snapshots. `Timeouts`
+moved from `conn` to `config` so the dependency runs one way. `lb` knows
+nothing about files or routes; `config` knows nothing about connections.
+
+### The snapshot is loaded at a request's first byte
+
+`config.Store` wraps `atomic.Pointer[Snapshot]`. A `Snapshot` holds the
+listeners, timeouts, limits, the pools and a map from normalised host to
+pool, and is never modified after `NewSnapshot` returns, so readers take no
+lock. Each request loads the pointer once, when its first byte arrives, and
+uses that one snapshot for its header deadline, its route, its pool and the
+rest of the exchange.
+
+The alternative was to load before waiting for the next request on a
+keep-alive connection. That would serve a request arriving after a 60-second
+idle wait from a config up to 60 seconds old, which matters once Phase 7
+reloads remove backends. The cost of loading at the first byte is that the
+idle wait and the header-size limit for that request come from the previous
+snapshot (or, for a connection's first request, the one current at accept).
+
+Not everything in the snapshot is live. `max_conns` sizes the connection
+tracker at startup, and the listener list is opened once; Phase 7 decides
+how listener changes apply.
+
+### Routing: exact host match, default pool or 404
+
+The `Host` header is normalised (port removed, IPv6 brackets removed,
+trailing dot removed, lower-cased) and looked up exactly. There are no
+wildcard routes; they can come with wildcard certificates in Phase 3 if they
+are wanted. A host with no route goes to `default_pool` if one is set, and
+otherwise gets 404. Like every error the proxy generates, the 404 closes the
+connection (Phase 1 rule). Route hosts in the file are normalised the same
+way, so `A.Test.` and `a.test` are the same route and listing both is an
+error. Routing allocates nothing unless the host has upper-case letters.
+
+### Balancer interface takes the healthy set
+
+`Pick(r *RequestInfo, healthy []*Backend) *Backend` is given the backends
+that may be chosen. In Phase 2 that is always the whole pool; Phase 5 passes
+only the healthy ones. `RequestInfo` carries the client IP and the request
+headers as the client sent them, before the proxy adds `X-Forwarded-*`.
+
+Pools are built per snapshot and never change. The only moving state is
+atomic: each backend's in-flight counter and each balancer's rotation
+counter. Both count under the plan's "in-flight counters" and "upstream
+pools" shared state, and nothing new needs a mutex.
+
+### Backends belong to one pool
+
+The same address in two pools gives two `Backend` values with their own
+in-flight counters, as nginx treats a server listed in two `upstream`
+blocks. The rejected alternative was one `Backend` per address across all
+pools, so that least-connections in one pool would see load sent from
+another. It is more accurate when pools overlap, but it couples pools that
+are otherwise independent, and the lab is the only place they overlap.
+Phase 5's health state will follow the same rule unless that turns out
+wrong. To carry counters across reloads, Phase 7 will build the new snapshot
+from the old one and reuse `Backend` values by pool and address.
+
+### Round-robin: one atomic counter
+
+Each pick is `healthy[(n.Add(1)-1) % len(healthy)]`. Every `Add` returns a
+distinct value, so k·N picks over N backends land exactly k on each under
+any concurrency, which the 3,000-request test checks exactly. With a
+changing healthy set (Phase 5) the rotation skips or repeats at the moment
+the set changes, which does not matter.
+
+### Least-connections: rotation on ties, no lock
+
+The balancer scans from a rotating start position and takes the first
+backend with the lowest in-flight count. Without the rotation every tie (all
+idle, the common case at low load) would go to the first backend.
+
+Pick and `Acquire` are two steps, so goroutines picking at the same moment
+can choose the same backend. The error is at most the number of concurrent
+picks and the next pick corrects it. A pool-wide lock around pick and
+acquire would remove it but serialise every request in the pool.
+
+The count runs from just after the pick until the response has been written
+to the client or has failed, so it includes the client's download time. A
+slow client therefore makes its backend look busy. nginx's `least_conn`
+counts the same way. Counting only until the response headers arrive would
+measure the backend more precisely, but it would undercount streaming
+responses.
+
+Measured (`TestLeastConnAvoidsSlowBackend`, `-race`, 3 backends, one with
++200 ms, 50 closed-loop clients for 3 s, fresh upstream connection per
+request; `bench/phase2/results/balancers.txt`):
+
+| Algorithm | Requests in 3 s | Fast, fast, slow | Slow share |
+| --- | --- | --- | --- |
+| round_robin | 2,145 | 715 / 715 / 715 | 33.3% |
+| least_conn | 35,112 | 17,478 / 17,400 / 234 | 0.7% |
+
+Round-robin sends the slow backend its third whatever happens, and since
+every client waits on it every third request, throughput collapses to the
+slow backend's pace. Least-connections parks about 16 of the 50 clients on
+the slow backend (234 requests at 200 ms ≈ 15.6 in flight). That is the
+level at which the two fast backends' counts catch up with it: with 50 in
+flight, 16 on the slow one and 17 on each fast one. The other 34 clients run
+at full speed. When all backends are equally fast the two algorithms give
+the same split.
+
+### Consistent hashing: 160 virtual nodes, address-derived points
+
+Each backend gets 160 points on a 64-bit ring at `Hash64(addr + "#" + i)`.
+A request's key is hashed and goes to the first point at or after it
+(`slices.BinarySearch` over a sorted `[]uint64`). Points depend only on the
+address, never on list order or the `Backend` value, so every instance and
+every reload of the same config builds the same ring. Ties between points
+are broken by address for the same reason.
+
+The hash is 64-bit FNV-1a followed by murmur3's `fmix64` finaliser. FNV-1a
+alone mixes the last bytes of its input poorly, and the point names differ
+only at the end. The loop is written out because `hash/fnv` returns an
+interface and allocates. The rejected alternative, `hash/maphash`, is
+faster but seeded per process, so two proxies would disagree on every key.
+
+A point whose backend is not in the healthy set is skipped by walking
+clockwise. That gives exactly the mapping of a ring rebuilt without that
+backend (the unit test checks every key), so Phase 5 can eject a backend
+without rebuilding anything and without moving any other key.
+
+The key is the client IP, or with `hash_key = "header:<Name>"` that header's
+first value. The name is canonicalised when the config loads and looked up
+with `h[name]`, because `Header.Get` canonicalises on every call. A request
+without the header (or with an empty value) falls back to the client IP, so
+it is still sticky to something rather than spread at random.
+
+**Removal** (`TestRingRemovalRemapsOneNth`, 10,000 keys, each of N backends
+removed in turn): the moved fraction ranged from 29.3% to 35.6% for N = 3,
+18.5% to 20.7% for N = 5, and 9.0% to 10.6% for N = 10, and no key moved
+except those on the removed backend. The test allows ±30% of 1/N.
+
+**Spread** (`TestRingSpread`, 100,000 client IPs; each row averages 20
+address sets: one with the lab's numbering, 10.0.0.11 upwards, and 19 seeded
+random ones):
+
+| vnodes | N | mean CV | mean max deviation | worst max deviation |
+| --- | --- | --- | --- | --- |
+| 1 | 3 | 59.9% | 80.9% | 152.8% |
+| 10 | 3 | 24.7% | 33.5% | 77.5% |
+| 100 | 3 | 7.8% | 10.4% | 20.9% |
+| 100 | 10 | 8.5% | 16.3% | 25.8% |
+| **160** | **3** | **6.1%** | **8.2%** | **14.5%** |
+| **160** | **5** | **6.2%** | **9.9%** | **16.1%** |
+| **160** | **10** | **7.4%** | **13.3%** | **22.4%** |
+| 200 | 3 | 5.0% | 6.8% | 14.6% |
+| 200 | 10 | 6.7% | 12.6% | 21.4% |
+
+"Max deviation" is the most or least loaded backend's distance from a fair
+share. The coefficient of variation falls roughly as 1/√vnodes. A single
+address set is noisy: a first measurement with one fixed set had 160 nodes
+looking worse than 100 for N = 3. Hence the 20 sets.
+160 (ketama's choice) was kept over 200: the gain is a point or two, the
+ring costs 16 bytes per point (25 KB for ten backends), and building it is a
+sort of N·vnodes points per reload. The test holds 160 to 15% mean and 25%
+worst max deviation.
+
+### Picks allocate nothing
+
+Each balancer has a benchmark with `-benchmem` and a unit test that asserts
+`testing.AllocsPerRun == 0`, so CI enforces it. The proxy keeps the
+`RequestInfo` in the connection's state rather than on the stack, because a
+pointer passed through the `Balancer` interface escapes and would be
+allocated per request. On the development machine (22 CPUs, 10 backends)
+a pick costs 8 ns for round-robin and least-connections and 18–22 ns for the
+ring, with zero allocations; see `bench/phase2/results/balancers.txt`.
+
+### Lab
+
+`lab/proxy.toml` is mounted into the proxy container. It defines a
+round-robin default pool (which the container healthcheck also hits),
+`a.test` on least-connections and `b.test` on consistent hashing by
+`X-User-Id`, each over all three backends. `check-lab.sh` runs
+`-check-config` inside the container and checks each route. Because the
+healthcheck shares the default pool, it checks that six requests reach all
+three backends rather than exactly two each.

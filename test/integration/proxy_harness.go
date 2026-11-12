@@ -4,21 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
 )
 
-// ProxyOptions configures StartProxy. Zero fields take the proxy's defaults,
-// so a test sets only what it is about.
+// ProxyOptions configures StartProxy and StartProxyConfig. Zero fields take
+// the proxy's defaults, so a test sets only what it is about.
 type ProxyOptions struct {
-	Timeouts       conn.Timeouts
+	// Timeouts are written to the config's [timeouts] table, in whole
+	// milliseconds.
+	Timeouts       config.Timeouts
 	MaxConns       int
 	MaxHeaderBytes int
 	// Logger receives the access log. Nil logs to the test output.
@@ -28,32 +35,75 @@ type ProxyOptions struct {
 // Proxy is a proxy running in-process on a random localhost port.
 type Proxy struct {
 	*conn.Server
-	Addr string
-	URL  string
+	// Snapshot is the config the proxy serves, for reaching its pools.
+	Snapshot *config.Snapshot
+	// ConfigPath is the generated config file.
+	ConfigPath string
+	Addr       string
+	URL        string
 }
 
-// StartProxy starts a proxy in front of backend. It is closed when the test
-// ends.
+// StartProxy starts a proxy whose default pool holds backend alone. It is
+// closed when the test ends.
 func StartProxy(t testing.TB, backend string, opts ProxyOptions) *Proxy {
 	t.Helper()
-	def := conn.DefaultTimeouts()
-	to := conn.Timeouts{
-		HeaderRead:       orDefault(opts.Timeouts.HeaderRead, def.HeaderRead),
-		Idle:             orDefault(opts.Timeouts.Idle, def.Idle),
-		ClientIO:         orDefault(opts.Timeouts.ClientIO, def.ClientIO),
-		UpstreamConnect:  orDefault(opts.Timeouts.UpstreamConnect, def.UpstreamConnect),
-		UpstreamResponse: orDefault(opts.Timeouts.UpstreamResponse, def.UpstreamResponse),
+	return StartProxyConfig(t, "default_pool = \"default\"\n\n[pool.default]\n"+Backends(backend), opts)
+}
+
+// StartProxyConfig starts a proxy from a generated config file. body holds
+// the top-level keys, routes and pools; the harness appends a listener on a
+// random localhost port and the [timeouts] and [limits] tables from opts, so
+// body must not contain those. The file goes through config.Load like the
+// real one. The proxy is closed when the test ends.
+func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
+	t.Helper()
+	var src strings.Builder
+	src.WriteString(body)
+	src.WriteString("\n[[listener]]\naddress = \"127.0.0.1:0\"\n\n[timeouts]\n")
+	for _, f := range []struct {
+		key string
+		d   time.Duration
+	}{
+		{"header_read_ms", opts.Timeouts.HeaderRead},
+		{"idle_ms", opts.Timeouts.Idle},
+		{"client_io_ms", opts.Timeouts.ClientIO},
+		{"upstream_connect_ms", opts.Timeouts.UpstreamConnect},
+		{"upstream_response_ms", opts.Timeouts.UpstreamResponse},
+	} {
+		if f.d != 0 {
+			fmt.Fprintf(&src, "%s = %d\n", f.key, f.d.Milliseconds())
+		}
+	}
+	src.WriteString("\n[limits]\n")
+	if opts.MaxConns != 0 {
+		fmt.Fprintf(&src, "max_conns = %d\n", opts.MaxConns)
+	}
+	if opts.MaxHeaderBytes != 0 {
+		fmt.Fprintf(&src, "max_header_bytes = %d\n", opts.MaxHeaderBytes)
+	}
+
+	path := filepath.Join(t.TempDir(), "proxy.toml")
+	if err := os.WriteFile(path, []byte(src.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("proxy config:\n%s\n%v", src.String(), err)
+	}
+	snap, err := config.NewSnapshot(cfg)
+	if err != nil {
+		t.Fatalf("proxy snapshot: %v", err)
 	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(t.Output(), nil))
 	}
-	p := &conn.Proxy{Backend: backend, Timeouts: to, MaxHeaderBytes: opts.MaxHeaderBytes, Logger: logger}
+	p := &conn.Proxy{Config: config.NewStore(snap), Logger: logger}
 	if err := p.Validate(); err != nil {
-		t.Fatalf("proxy config: %v", err)
+		t.Fatalf("proxy: %v", err)
 	}
-	srv := conn.NewServer(p, opts.MaxConns, logger)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	srv := conn.NewServer(p, snap.Limits.MaxConns, logger)
+	ln, err := net.Listen("tcp", snap.Listeners[0])
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}
@@ -66,14 +116,27 @@ func StartProxy(t testing.TB, backend string, opts ProxyOptions) *Proxy {
 		}
 	})
 	addr := ln.Addr().String()
-	return &Proxy{Server: srv, Addr: addr, URL: "http://" + addr}
+	return &Proxy{Server: srv, Snapshot: snap, ConfigPath: path, Addr: addr, URL: "http://" + addr}
 }
 
-func orDefault(d, def time.Duration) time.Duration {
-	if d != 0 {
-		return d
+// Backends renders a pool's backends key for the given addresses.
+func Backends(addrs ...string) string {
+	var b strings.Builder
+	b.WriteString("backends = [\n")
+	for _, a := range addrs {
+		fmt.Fprintf(&b, "  { address = %q },\n", a)
 	}
-	return def
+	b.WriteString("]\n")
+	return b.String()
+}
+
+// Addrs returns the backends' addresses.
+func Addrs(bs []*Backend) []string {
+	out := make([]string, len(bs))
+	for i, b := range bs {
+		out[i] = b.Addr
+	}
+	return out
 }
 
 // RawBackend is a TCP server whose connections are handled by test code,

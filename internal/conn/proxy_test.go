@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
 )
 
@@ -56,8 +58,8 @@ func (l *logBuf) waitAccess(t *testing.T, n int) []map[string]any {
 	return recs
 }
 
-func testTimeouts() Timeouts {
-	return Timeouts{
+func testTimeouts() config.Timeouts {
+	return config.Timeouts{
 		HeaderRead:       2 * time.Second,
 		Idle:             5 * time.Second,
 		ClientIO:         5 * time.Second,
@@ -66,14 +68,43 @@ func testTimeouts() Timeouts {
 	}
 }
 
-// startProxy runs a Proxy for backend; mut may adjust it before it starts.
-func startProxy(t *testing.T, backend string, mut func(*Proxy)) (string, *Server, *logBuf) {
+// parseConfig parses src, a config file without a listener, and sets the
+// test timeouts.
+func parseConfig(t *testing.T, src string) *config.Config {
+	t.Helper()
+	c, err := config.Parse("test.toml", []byte(src+"\n[[listener]]\naddress = \"127.0.0.1:0\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Timeouts = testTimeouts()
+	return c
+}
+
+// startProxy runs a Proxy whose default pool is backend alone; mut may
+// adjust the config before it starts.
+func startProxy(t *testing.T, backend string, mut func(*config.Config)) (string, *Server, *logBuf) {
+	t.Helper()
+	c := parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", backend))
+	if mut != nil {
+		mut(c)
+	}
+	return startProxySnapshot(t, newSnapshot(t, c))
+}
+
+func newSnapshot(t *testing.T, c *config.Config) *config.Snapshot {
+	t.Helper()
+	snap, err := config.NewSnapshot(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+// startProxySnapshot runs a Proxy serving snap.
+func startProxySnapshot(t *testing.T, snap *config.Snapshot) (string, *Server, *logBuf) {
 	t.Helper()
 	logs := &logBuf{}
-	p := &Proxy{Backend: backend, Timeouts: testTimeouts(), Logger: slog.New(slog.NewJSONHandler(logs, nil))}
-	if mut != nil {
-		mut(p)
-	}
+	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(logs, nil))}
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +492,7 @@ func TestProxyEarlyResponse(t *testing.T) {
 
 func TestProxyRejects(t *testing.T) {
 	baddr, b := startBackend(t, testbackend.Config{})
-	addr, _, logs := startProxy(t, baddr, func(p *Proxy) { p.MaxHeaderBytes = 8 << 10 })
+	addr, _, logs := startProxy(t, baddr, func(c *config.Config) { c.Limits.MaxHeaderBytes = 8 << 10 })
 	cases := []struct {
 		name string
 		raw  string
@@ -507,7 +538,7 @@ func TestProxyBackendRefused(t *testing.T) {
 }
 
 func TestProxyDialTimeout(t *testing.T) {
-	addr, _, _ := startProxy(t, hangingAddr(t), func(p *Proxy) { p.Timeouts.UpstreamConnect = 200 * time.Millisecond })
+	addr, _, _ := startProxy(t, hangingAddr(t), func(c *config.Config) { c.Timeouts.UpstreamConnect = 200 * time.Millisecond })
 	cl := dialClient(t, addr)
 	t0 := time.Now()
 	cl.send(get("a"))
@@ -544,7 +575,7 @@ func TestProxyUpstreamErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			baddr := rawBackend(t, func(c net.Conn) { tc.handle(c, bufio.NewReader(c)) })
-			addr, _, _ := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.UpstreamResponse = 300 * time.Millisecond })
+			addr, _, _ := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
 			cl := dialClient(t, addr)
 			cl.send(get("a"))
 			if resp, _ := cl.read("GET"); resp.StatusCode != tc.want {
@@ -572,7 +603,7 @@ func TestProxyTruncatedUpstreamBody(t *testing.T) {
 				io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly-part")
 				tc.after(c)
 			})
-			addr, _, logs := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.UpstreamResponse = 300 * time.Millisecond })
+			addr, _, logs := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
 			cl := dialClient(t, addr)
 			cl.send(get("a"))
 			cl.c.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -595,7 +626,7 @@ func TestProxyTruncatedUpstreamBody(t *testing.T) {
 
 func TestProxyHeaderTimeout(t *testing.T) {
 	baddr, _ := startBackend(t, testbackend.Config{})
-	addr, _, logs := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.HeaderRead = 300 * time.Millisecond })
+	addr, _, logs := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.HeaderRead = 300 * time.Millisecond })
 	cl := dialClient(t, addr)
 	t0 := time.Now()
 	cl.send("GET / HTTP/1.1\r\nHost: a\r\n") // no terminating blank line
@@ -612,7 +643,7 @@ func TestProxyHeaderTimeout(t *testing.T) {
 // extend the header deadline (slowloris).
 func TestProxyHeaderTimeoutCoversWholeBlock(t *testing.T) {
 	baddr, _ := startBackend(t, testbackend.Config{})
-	addr, _, _ := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.HeaderRead = 400 * time.Millisecond })
+	addr, _, _ := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.HeaderRead = 400 * time.Millisecond })
 	cl := dialClient(t, addr)
 	done := make(chan struct{})
 	go func() {
@@ -634,7 +665,7 @@ func TestProxyHeaderTimeoutCoversWholeBlock(t *testing.T) {
 
 func TestProxyIdleTimeout(t *testing.T) {
 	baddr, _ := startBackend(t, testbackend.Config{})
-	addr, s, _ := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.Idle = 300 * time.Millisecond })
+	addr, s, _ := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.Idle = 300 * time.Millisecond })
 	cl := dialClient(t, addr)
 	cl.send(get("a"))
 	cl.read("GET")
@@ -660,7 +691,7 @@ func TestProxyClientBodyStall(t *testing.T) {
 			close(upstreamClosed)
 		}
 	})
-	addr, _, _ := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.ClientIO = 300 * time.Millisecond })
+	addr, _, _ := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.ClientIO = 300 * time.Millisecond })
 	cl := dialClient(t, addr)
 	cl.send("POST /upload HTTP/1.1\r\nHost: a\r\nContent-Length: 100\r\n\r\nonly ten b")
 	resp, _ := cl.read("POST")
@@ -679,7 +710,7 @@ func TestProxyClientBodyStall(t *testing.T) {
 // that stops sending its body can only be cut off.
 func TestProxyClientStallMidStream(t *testing.T) {
 	baddr, _ := startBackend(t, testbackend.Config{})
-	addr, _, logs := startProxy(t, baddr, func(p *Proxy) { p.Timeouts.ClientIO = 300 * time.Millisecond })
+	addr, _, logs := startProxy(t, baddr, func(c *config.Config) { c.Timeouts.ClientIO = 300 * time.Millisecond })
 	cl := dialClient(t, addr)
 	cl.send("POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 100\r\n\r\nonly ten b")
 	cl.c.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -718,8 +749,8 @@ func TestProxyAccessLog(t *testing.T) {
 	cl.read("POST")
 	r := logs.waitAccess(t, 1)[0]
 	want := map[string]any{
-		"client": "127.0.0.1", "method": "POST", "path": "/echo", "status": float64(200),
-		"backend": baddr, "bytes_in": float64(5), "bytes_out": float64(5),
+		"client": "127.0.0.1", "method": "POST", "host": "a", "path": "/echo", "status": float64(200),
+		"pool": "p", "backend": baddr, "bytes_in": float64(5), "bytes_out": float64(5),
 	}
 	for k, v := range want {
 		if r[k] != v {
@@ -764,19 +795,11 @@ func TestServerCloseMidRequest(t *testing.T) {
 }
 
 func TestProxyValidate(t *testing.T) {
-	ok := Proxy{Backend: "127.0.0.1:1", Timeouts: DefaultTimeouts()}
-	if err := ok.Validate(); err != nil {
-		t.Fatal(err)
+	if err := (&Proxy{}).Validate(); err == nil {
+		t.Error("accepted a proxy without a config store")
 	}
-	for name, p := range map[string]Proxy{
-		"no backend":    {Timeouts: DefaultTimeouts()},
-		"no port":       {Backend: "localhost", Timeouts: DefaultTimeouts()},
-		"zero timeouts": {Backend: "127.0.0.1:1"},
-		"neg header":    {Backend: "127.0.0.1:1", Timeouts: DefaultTimeouts(), MaxHeaderBytes: -1},
-	} {
-		if err := p.Validate(); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
+	if err := (&Proxy{Config: config.NewStore(nil)}).Validate(); err == nil {
+		t.Error("accepted an empty config store")
 	}
 }
 

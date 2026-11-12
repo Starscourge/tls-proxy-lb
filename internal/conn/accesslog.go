@@ -13,6 +13,8 @@ type accessRecord struct {
 	method  string
 	path    string
 	status  int
+	host    string
+	pool    string
 	backend string
 	// upstream is the time from starting the dial to having the response
 	// headers, or -1 if no response arrived.
@@ -23,18 +25,20 @@ type accessRecord struct {
 }
 
 func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecord {
-	return &accessRecord{start: start, method: req.Method, path: req.URL.Path, upstream: -1}
+	return &accessRecord{start: start, method: req.Method, host: req.Host, path: req.URL.Path, upstream: -1}
 }
 
-// logAccess writes the access line: client IP, method, path, status,
-// backend, upstream time, total time, body bytes in each direction, and the
+// logAccess writes the access line: client IP, method, host, path, status,
+// pool, backend, upstream time, total time, body bytes in each direction, and the
 // error that ended the request, if any.
 func (cc *clientConn) logAccess(r *accessRecord) {
 	attrs := []slog.Attr{
 		slog.String("client", cc.ip),
 		slog.String("method", r.method),
+		slog.String("host", r.host),
 		slog.String("path", r.path),
 		slog.Int("status", r.status),
+		slog.String("pool", r.pool),
 		slog.String("backend", r.backend),
 		slog.Float64("upstream_ms", ms(r.upstream)),
 		slog.Float64("total_ms", ms(time.Since(r.start))),

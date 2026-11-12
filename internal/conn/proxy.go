@@ -13,14 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
+	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 const (
-	// DefaultMaxHeaderBytes caps a request's line plus headers.
-	DefaultMaxHeaderBytes = 64 << 10
-
 	clientReadBufferSize  = 4 << 10
 	clientWriteBufferSize = 4 << 10
 
@@ -41,15 +40,13 @@ const (
 // a response, as nginx does.
 const StatusClientClosed = 499
 
-// Proxy forwards each request on a client connection to one backend over a
-// fresh upstream connection. It implements Handler.
+// Proxy routes each request on a client connection by its Host header to a
+// pool, picks a backend with the pool's balancer and forwards the request
+// over a fresh upstream connection. It implements Handler.
 type Proxy struct {
-	// Backend is the host:port every request goes to.
-	Backend  string
-	Timeouts Timeouts
-	// MaxHeaderBytes caps the request line plus headers; larger requests get
-	// 431. Zero means DefaultMaxHeaderBytes.
-	MaxHeaderBytes int
+	// Config holds the current config snapshot. Each request loads it once
+	// and uses that snapshot to the end.
+	Config *config.Store
 	// Logger receives one "access" line per request plus errors. Nil
 	// discards.
 	Logger *slog.Logger
@@ -57,16 +54,10 @@ type Proxy struct {
 
 // Validate checks the proxy's settings.
 func (p *Proxy) Validate() error {
-	if p.Backend == "" {
-		return errors.New("proxy: Backend is required")
+	if p.Config == nil || p.Config.Load() == nil {
+		return errors.New("proxy: Config must hold a snapshot")
 	}
-	if _, _, err := net.SplitHostPort(p.Backend); err != nil {
-		return fmt.Errorf("proxy: Backend %q: %w", p.Backend, err)
-	}
-	if p.MaxHeaderBytes < 0 {
-		return fmt.Errorf("proxy: MaxHeaderBytes must be >= 0, got %d", p.MaxHeaderBytes)
-	}
-	return p.Timeouts.Validate()
+	return nil
 }
 
 // ServeConn runs the keep-alive loop for one client connection: read a
@@ -86,10 +77,18 @@ func (p *Proxy) ServeConn(ctx context.Context, tc *TrackedConn) {
 // reads through br while a request with a body is in flight.
 type clientConn struct {
 	p   *Proxy
-	t   Timeouts
 	tc  *TrackedConn
 	ip  string
 	log *slog.Logger
+
+	// t and maxHeader come from the snapshot of the current request, or of
+	// the previous one while waiting for the next. A new connection starts
+	// with the snapshot current at accept.
+	t         config.Timeouts
+	maxHeader int64
+	// info is handed to the balancer. It lives here, not on the stack, so
+	// passing it through the Balancer interface does not allocate.
+	info lb.RequestInfo
 
 	lr httpx.HeaderLimitReader
 	br *bufio.Reader
@@ -102,22 +101,22 @@ type clientConn struct {
 }
 
 func newClientConn(p *Proxy, tc *TrackedConn) *clientConn {
-	cc := &clientConn{p: p, t: p.Timeouts, tc: tc, ip: clientIP(tc.RemoteAddr()), log: p.Logger}
+	cc := &clientConn{p: p, tc: tc, ip: clientIP(tc.RemoteAddr()), log: p.Logger}
 	if cc.log == nil {
 		cc.log = slog.New(slog.DiscardHandler)
 	}
+	cc.use(p.Config.Load())
 	cc.lr.R = tc
 	cc.br = bufio.NewReaderSize(&cc.lr, clientReadBufferSize)
-	cc.dw = httpx.DeadlineWriter{Conn: tc, Timeout: p.Timeouts.ClientIO}
+	cc.dw = httpx.DeadlineWriter{Conn: tc, Timeout: cc.t.ClientIO}
 	cc.bw = bufio.NewWriterSize(&cc.dw, clientWriteBufferSize)
 	return cc
 }
 
-func (cc *clientConn) maxHeaderBytes() int64 {
-	if cc.p.MaxHeaderBytes > 0 {
-		return int64(cc.p.MaxHeaderBytes)
-	}
-	return DefaultMaxHeaderBytes
+// use takes the connection's settings from snap.
+func (cc *clientConn) use(snap *config.Snapshot) {
+	cc.t = snap.Timeouts
+	cc.maxHeader = int64(snap.Limits.MaxHeaderBytes)
 }
 
 // serveRequest handles one request and reports whether the connection can
@@ -132,13 +131,19 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	if err := cc.tc.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		return false
 	}
-	cc.lr.Limit(cc.maxHeaderBytes())
+	cc.lr.Limit(cc.maxHeader)
 	// Wait for the first byte of the next request. EOF, the idle timeout or
 	// a closed connection all end the connection quietly.
 	if _, err := cc.br.Peek(1); err != nil {
 		return false
 	}
 
+	// The request starts with its first byte, and so does its snapshot: a
+	// request that arrives after a long idle wait is served by the config
+	// current now, not the one current when the wait began. The header
+	// limit for this request was set above, from the previous snapshot.
+	snap := cc.p.Config.Load()
+	cc.use(snap)
 	start := time.Now()
 	cc.tc.SetState(StateActive)
 	headerDeadline := start.Add(cc.t.HeaderRead)
@@ -156,14 +161,19 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	cc.lr.Unlimit()
 
 	if status, reason := httpx.CheckRequest(req); status != 0 {
-		rec := cc.newRecord(start, req)
-		cc.linger = req.Body != http.NoBody
-		cc.writeError(status, req.Method == http.MethodHead)
-		rec.status, rec.err = status, errors.New(reason)
-		cc.logAccess(rec)
-		return false
+		return cc.reject(cc.newRecord(start, req), req, status, reason)
 	}
-	return cc.proxy(ctx, req, start)
+	return cc.proxy(ctx, snap, req, start)
+}
+
+// reject answers a request the proxy will not forward with status, before
+// anything has been sent upstream, and ends the connection.
+func (cc *clientConn) reject(rec *accessRecord, req *http.Request, status int, reason string) bool {
+	cc.linger = req.Body != http.NoBody
+	cc.writeError(status, req.Method == http.MethodHead)
+	rec.status, rec.err = status, errors.New(reason)
+	cc.logAccess(rec)
+	return false
 }
 
 // headerError answers a request whose header block could not be read.
@@ -189,18 +199,37 @@ func (cc *clientConn) headerError(start time.Time, err error, timedOut bool) {
 	cc.logAccess(rec)
 }
 
-// proxy forwards req to the backend and the response back. It reports
-// whether the client connection can carry another request.
-func (cc *clientConn) proxy(ctx context.Context, req *http.Request, start time.Time) bool {
+// proxy routes req to a pool, picks a backend, forwards req to it and the
+// response back. It reports whether the client connection can carry
+// another request.
+func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *http.Request, start time.Time) bool {
 	rec := cc.newRecord(start, req)
-	rec.backend = cc.p.Backend
 	clientKeepAlive := !req.Close && req.ProtoAtLeast(1, 1)
 	head := req.Method == http.MethodHead
+
+	pool := snap.Route(req.Host)
+	if pool == nil {
+		return cc.reject(rec, req, http.StatusNotFound, "no route for host")
+	}
+	rec.pool = pool.Name
+	// The balancer sees the headers as the client sent them, before the
+	// proxy adds its own.
+	cc.info = lb.RequestInfo{ClientIP: cc.ip, Header: req.Header}
+	b := pool.Pick(&cc.info)
+	cc.info.Header = nil
+	if b == nil {
+		return cc.reject(rec, req, http.StatusServiceUnavailable, "no backend available")
+	}
+	// The count covers the whole exchange, until the response has been
+	// written to the client or has failed.
+	b.Acquire()
+	defer b.Release()
+	rec.backend = b.Addr
 
 	httpx.PrepareRequest(req, cc.ip, forwardedProto)
 
 	upStart := time.Now()
-	uc, err := upstream.Dial(ctx, cc.p.Backend, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
+	uc, err := upstream.Dial(ctx, b.Addr, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 	var reqBody *httpx.Body
 	if req.Body != nil && req.Body != http.NoBody {
 		// Bytes already sent upstream are flushed before waiting on the

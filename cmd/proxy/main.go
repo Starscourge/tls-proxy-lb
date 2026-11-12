@@ -16,7 +16,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -36,7 +38,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&o.listen, "listen", ":8080", "address to accept client connections on")
 	fs.StringVar(&o.backend, "backend", "", "backend host:port every request is sent to (required)")
 	fs.IntVar(&o.maxConns, "max-conns", 10000, "maximum open client connections; more are closed at accept")
-	fs.IntVar(&o.maxHeaderBytes, "max-header-bytes", conn.DefaultMaxHeaderBytes, "maximum request line plus headers; larger requests get 431")
+	fs.IntVar(&o.maxHeaderBytes, "max-header-bytes", config.DefaultLimits().MaxHeaderBytes, "maximum request line plus headers; larger requests get 431")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -58,15 +60,20 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 // run serves until ctx is cancelled or the listener fails. ready, if
 // non-nil, receives the bound address once the listener is open.
 func run(ctx context.Context, o options, logger *slog.Logger, ready chan<- string) error {
-	p := &conn.Proxy{
-		Backend:        o.backend,
-		Timeouts:       conn.DefaultTimeouts(),
-		MaxHeaderBytes: o.maxHeaderBytes,
-		Logger:         logger,
+	if _, _, err := net.SplitHostPort(o.backend); err != nil {
+		return fmt.Errorf("-backend %q: %w", o.backend, err)
 	}
-	if err := p.Validate(); err != nil {
+	snap, err := config.NewSnapshot(&config.Config{
+		Listeners:   []string{o.listen},
+		DefaultPool: "default",
+		Pools:       []config.Pool{{Name: "default", Algorithm: lb.RoundRobin, Backends: []string{o.backend}}},
+		Timeouts:    config.DefaultTimeouts(),
+		Limits:      config.Limits{MaxConns: o.maxConns, MaxHeaderBytes: o.maxHeaderBytes},
+	})
+	if err != nil {
 		return err
 	}
+	p := &conn.Proxy{Config: config.NewStore(snap), Logger: logger}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", o.listen)
 	if err != nil {

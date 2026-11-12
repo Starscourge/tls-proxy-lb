@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
 )
 
@@ -180,7 +180,7 @@ func TestBackendTimeoutReturns504(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := StartBackend(t, "b1", tc.opts)
-			p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: conn.Timeouts{UpstreamResponse: timeout}})
+			p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: config.Timeouts{UpstreamResponse: timeout}})
 			t0 := time.Now()
 			resp, err := NewClient(t).Get(p.URL + tc.path)
 			if err != nil {
@@ -203,7 +203,7 @@ func TestBackendTimeoutReturns504(t *testing.T) {
 func TestHalfHeaderClosedAtTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	b := StartBackend(t, "b1", BackendOptions{})
-	p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: conn.Timeouts{HeaderRead: timeout}})
+	p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: config.Timeouts{HeaderRead: timeout}})
 	c, err := net.Dial("tcp", p.Addr)
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +310,7 @@ func TestSlowReaderDoesNotGrowMemory(t *testing.T) {
 	const size = 1 << 30
 	const limit = 16 << 20 // allowed heap growth
 	b := StartBackend(t, "b1", BackendOptions{})
-	p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: conn.Timeouts{ClientIO: 30 * time.Second}})
+	p := StartProxy(t, b.Addr, ProxyOptions{Timeouts: config.Timeouts{ClientIO: 30 * time.Second}})
 
 	heapInuse := func() uint64 {
 		var m runtime.MemStats

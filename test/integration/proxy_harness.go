@@ -59,7 +59,7 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 	t.Helper()
 	var src strings.Builder
 	src.WriteString(body)
-	src.WriteString("\n[[listener]]\naddress = \"127.0.0.1:0\"\n\n[timeouts]\n")
+	src.WriteString("\n[[listener]]\naddress = \"127.0.0.1:0\"\nmode = \"http\"\n\n[timeouts]\n")
 	for _, f := range []struct {
 		key string
 		d   time.Duration
@@ -103,7 +103,7 @@ func StartProxyConfig(t testing.TB, body string, opts ProxyOptions) *Proxy {
 		t.Fatalf("proxy: %v", err)
 	}
 	srv := conn.NewServer(snap.Limits.MaxConns, logger)
-	ln, err := net.Listen("tcp", snap.Listeners[0])
+	ln, err := net.Listen("tcp", snap.Listeners[0].Address)
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}

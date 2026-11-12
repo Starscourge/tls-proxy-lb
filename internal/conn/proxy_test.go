@@ -60,6 +60,7 @@ func (l *logBuf) waitAccess(t *testing.T, n int) []map[string]any {
 
 func testTimeouts() config.Timeouts {
 	return config.Timeouts{
+		Handshake:        2 * time.Second,
 		HeaderRead:       2 * time.Second,
 		Idle:             5 * time.Second,
 		ClientIO:         5 * time.Second,
@@ -72,7 +73,7 @@ func testTimeouts() config.Timeouts {
 // test timeouts.
 func parseConfig(t *testing.T, src string) *config.Config {
 	t.Helper()
-	c, err := config.Parse("test.toml", []byte(src+"\n[[listener]]\naddress = \"127.0.0.1:0\"\n"))
+	c, err := config.Parse("test.toml", []byte(src+"\n[[listener]]\naddress = \"127.0.0.1:0\"\nmode = \"http\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

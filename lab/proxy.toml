@@ -10,6 +10,7 @@ default_pool = "all"
 
 [[listener]]
 address = "0.0.0.0:8080"
+mode    = "http"
 
 [[route]]
 host = "a.test"

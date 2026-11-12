@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,12 +24,20 @@ type file struct {
 	Listeners   []fileListener      `toml:"listener"`
 	Routes      []fileRoute         `toml:"route"`
 	Pools       map[string]filePool `toml:"pool"`
+	TLS         fileTLS             `toml:"tls"`
 	Timeouts    fileTimeouts        `toml:"timeouts"`
 	Limits      fileLimits          `toml:"limits"`
 }
 
 type fileListener struct {
-	Address string `toml:"address"`
+	Address      string `toml:"address"`
+	Mode         string `toml:"mode"`
+	RedirectPort *int64 `toml:"redirect_port"` // nil when absent
+}
+
+type fileTLS struct {
+	DefaultCert string `toml:"default_cert"`
+	DefaultKey  string `toml:"default_key"`
 }
 
 type fileRoute struct {
@@ -49,6 +58,7 @@ type fileBackend struct {
 }
 
 type fileTimeouts struct {
+	HandshakeMS        int64 `toml:"handshake_ms"`
 	HeaderReadMS       int64 `toml:"header_read_ms"`
 	IdleMS             int64 `toml:"idle_ms"`
 	ClientIOMS         int64 `toml:"client_io_ms"`
@@ -99,7 +109,8 @@ func Load(path string) (*Config, error) {
 }
 
 // Parse decodes and validates a config file's contents. name prefixes every
-// error message. It returns every problem found, joined with errors.Join,
+// error message, and relative certificate paths are resolved against its
+// directory. It returns every problem found, joined with errors.Join,
 // each a *FieldError, or a single decoding error for a file that is not
 // valid TOML or has a value of the wrong type.
 func Parse(name string, data []byte) (*Config, error) {
@@ -109,7 +120,7 @@ func Parse(name string, data []byte) (*Config, error) {
 		// The decoder's messages name the line and the last key read.
 		return nil, fmt.Errorf("%s: %s", name, strings.TrimPrefix(err.Error(), "toml: "))
 	}
-	v := validator{file: name, md: md}
+	v := validator{file: name, dir: filepath.Dir(name), md: md}
 	for _, k := range md.Undecoded() {
 		v.errorf(k.String(), "unknown field")
 	}
@@ -123,6 +134,7 @@ func Parse(name string, data []byte) (*Config, error) {
 // validator collects field errors while building a Config.
 type validator struct {
 	file string
+	dir  string // where relative paths start
 	md   toml.MetaData
 	errs []error
 }
@@ -133,10 +145,12 @@ func (v *validator) errorf(field, format string, args ...any) {
 
 func (v *validator) config(f *file) *Config {
 	c := &Config{
+		Source:   v.file,
 		Timeouts: v.timeouts(&f.Timeouts),
 		Limits:   v.limits(&f.Limits),
 	}
 	c.Listeners = v.listeners(f.Listeners)
+	c.TLS = v.tls(&f.TLS)
 	c.Pools = v.pools(f.Pools)
 	known := make(map[string]bool, len(f.Pools))
 	for name := range f.Pools {
@@ -150,17 +164,91 @@ func (v *validator) config(f *file) *Config {
 	if len(f.Routes) == 0 && f.DefaultPool == "" {
 		v.errorf("route", "at least one [[route]] or a default_pool is required")
 	}
+	v.certificatesCover(c, f.Routes)
 	return c
 }
 
-func (v *validator) listeners(ls []fileListener) []string {
+// certificatesCover checks that HTTPS listeners can complete a handshake
+// for every route: each route needs its own certificate unless there is a
+// default one.
+func (v *validator) certificatesCover(c *Config, routes []fileRoute) {
+	first := slices.IndexFunc(c.Listeners, func(l Listener) bool { return l.Mode == ModeHTTPS })
+	if first < 0 || c.TLS.DefaultCert != "" {
+		return
+	}
+	if len(routes) == 0 {
+		v.errorf(fmt.Sprintf("listener[%d].mode", first), "%q needs a certificate: set default_cert and default_key in [tls], or add routes with cert and key", ModeHTTPS)
+		return
+	}
+	for i, r := range routes {
+		if r.Cert == "" && r.Key == "" {
+			v.errorf(fmt.Sprintf("route[%d].cert", i), "is required: an %s listener serves this host and [tls] has no default_cert", ModeHTTPS)
+		}
+	}
+}
+
+// tls validates the [tls] table.
+func (v *validator) tls(ft *fileTLS) TLS {
+	cert, key := v.certPair("tls.default_cert", "tls.default_key", ft.DefaultCert, ft.DefaultKey)
+	return TLS{DefaultCert: cert, DefaultKey: key}
+}
+
+// certPair checks that a certificate and key are set together and resolves
+// them against the config file's directory.
+func (v *validator) certPair(certField, keyField, cert, key string) (string, string) {
+	switch {
+	case cert == "" && key == "":
+		return "", ""
+	case cert == "":
+		v.errorf(certField, "is required when %s is set", keyField[strings.LastIndexByte(keyField, '.')+1:])
+		return "", ""
+	case key == "":
+		v.errorf(keyField, "is required when %s is set", certField[strings.LastIndexByte(certField, '.')+1:])
+		return "", ""
+	}
+	return v.path(cert), v.path(key)
+}
+
+func (v *validator) path(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(v.dir, p)
+}
+
+func (v *validator) listeners(ls []fileListener) []Listener {
 	if len(ls) == 0 {
 		v.errorf("listener", "at least one [[listener]] is required")
 	}
 	seen := map[string]int{}
-	out := make([]string, 0, len(ls))
+	out := make([]Listener, 0, len(ls))
 	for i, l := range ls {
-		field := fmt.Sprintf("listener[%d].address", i)
+		prefix := fmt.Sprintf("listener[%d]", i)
+		ok := true
+		mode := l.Mode
+		if mode == "" {
+			mode = ModeHTTPS
+		}
+		if !slices.Contains(Modes, mode) {
+			v.errorf(prefix+".mode", "%q is not one of %s", l.Mode, strings.Join(Modes, ", "))
+			ok = false
+		}
+		port := 0
+		if l.RedirectPort != nil {
+			switch rp := *l.RedirectPort; {
+			case mode != ModeRedirect:
+				v.errorf(prefix+".redirect_port", "is only valid with mode = %q", ModeRedirect)
+				ok = false
+			case rp < 1 || rp > 65535:
+				v.errorf(prefix+".redirect_port", "must be from 1 to 65535, got %d", rp)
+				ok = false
+			default:
+				port = int(rp)
+			}
+		} else if mode == ModeRedirect {
+			port = 443
+		}
+		field := prefix + ".address"
 		if l.Address == "" {
 			v.errorf(field, "is required")
 			continue
@@ -170,14 +258,16 @@ func (v *validator) listeners(ls []fileListener) []string {
 			continue
 		}
 		// Port 0 asks for any free port, so two such listeners never clash.
-		if _, port, _ := net.SplitHostPort(l.Address); port != "0" {
+		if _, p, _ := net.SplitHostPort(l.Address); p != "0" {
 			if j, dup := seen[l.Address]; dup {
 				v.errorf(field, "%q is also listener[%d]", l.Address, j)
 				continue
 			}
 			seen[l.Address] = i
 		}
-		out = append(out, l.Address)
+		if ok {
+			out = append(out, Listener{Address: l.Address, Mode: mode, RedirectPort: port})
+		}
 	}
 	return out
 }
@@ -272,9 +362,10 @@ func (v *validator) routes(rs []fileRoute, pools map[string]bool) []Route {
 			v.errorf(prefix+".pool", "no pool named %q", r.Pool)
 			ok = false
 		}
+		cert, key := v.certPair(prefix+".cert", prefix+".key", r.Cert, r.Key)
 		if ok {
 			seen[host] = i
-			out = append(out, Route{Host: host, Pool: r.Pool, Cert: r.Cert, Key: r.Key})
+			out = append(out, Route{Host: host, Pool: r.Pool, Cert: cert, Key: key})
 		}
 	}
 	return out
@@ -287,6 +378,7 @@ func (v *validator) timeouts(ft *fileTimeouts) Timeouts {
 		ms  int64
 		dst *time.Duration
 	}{
+		{"handshake_ms", ft.HandshakeMS, &t.Handshake},
 		{"header_read_ms", ft.HeaderReadMS, &t.HeaderRead},
 		{"idle_ms", ft.IdleMS, &t.Idle},
 		{"client_io_ms", ft.ClientIOMS, &t.ClientIO},

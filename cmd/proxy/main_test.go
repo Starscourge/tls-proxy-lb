@@ -72,6 +72,7 @@ func writeFile(t *testing.T, content string) string {
 const goodConfig = `
 [[listener]]
 address = "127.0.0.1:0"
+mode = "http"
 
 [[route]]
 host = "a.test"
@@ -84,6 +85,7 @@ backends = [{ address = "127.0.0.1:8000" }]
 const badConfig = `
 [[listener]]
 address = "127.0.0.1"
+mode = "http"
 
 [[route]]
 host = "a.test"
@@ -215,9 +217,11 @@ default_pool = "pb"
 
 [[listener]]
 address = "127.0.0.1:0"
+mode = "http"
 
 [[listener]]
 address = "127.0.0.1:0"
+mode = "http"
 
 [[route]]
 host = "a.test"
@@ -296,9 +300,11 @@ default_pool = "p"
 
 [[listener]]
 address = %q
+mode = "http"
 
 [[listener]]
 address = %q
+mode = "http"
 
 [pool.p]
 backends = [{ address = "127.0.0.1:1" }]

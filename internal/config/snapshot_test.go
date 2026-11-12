@@ -1,15 +1,39 @@
 package config
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 )
 
+// certDir writes certs/a.test.{crt,key} and certs/default.{crt,key} (for
+// *.test) into a new directory and returns it.
+func certDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	certs := filepath.Join(dir, "certs")
+	if err := os.Mkdir(certs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ca := tlstest.NewCA(t)
+	ca.WriteFiles(t, certs, "a.test", tlstest.LeafOptions{}, "a.test")
+	ca.WriteFiles(t, certs, "default", tlstest.LeafOptions{}, "*.test")
+	return dir
+}
+
+// mustSnapshot parses src as a file in a directory holding the certificates
+// fullConfig names, and builds its snapshot.
 func mustSnapshot(t *testing.T, src string) *Snapshot {
 	t.Helper()
-	c, err := Parse("test.toml", []byte(src))
+	src = strings.ReplaceAll(src, "/etc/proxy/default.key", "certs/default.key")
+	c, err := Parse(filepath.Join(certDir(t), "test.toml"), []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +92,68 @@ func TestSnapshotRoute(t *testing.T) {
 	if _, ok := b.Balancer.(*lb.RingBalancer); !ok {
 		t.Fatalf("pool_b balancer %T", b.Balancer)
 	}
-	if s.Timeouts.HeaderRead.Milliseconds() != 2500 || s.Limits.MaxConns != 500 || len(s.Listeners) != 2 {
+	if s.Timeouts.HeaderRead.Milliseconds() != 2500 || s.Limits.MaxConns != 500 || len(s.Listeners) != 3 {
 		t.Fatalf("settings not copied: %+v %+v %v", s.Timeouts, s.Limits, s.Listeners)
+	}
+	if s.Certs.Len() != 1 || !s.Certs.Has("a.test") || !s.Certs.HasDefault() {
+		t.Fatalf("certificates not loaded: %d host certs, default %v", s.Certs.Len(), s.Certs.HasDefault())
+	}
+	if got := s.Certs.Lookup("A.TEST").Leaf.DNSNames; !reflect.DeepEqual(got, []string{"a.test"}) {
+		t.Fatalf("a.test served %v", got)
+	}
+	if got := s.Certs.Lookup("other.test").Leaf.DNSNames; !reflect.DeepEqual(got, []string{"*.test"}) {
+		t.Fatalf("other.test served %v", got)
+	}
+}
+
+// TestSnapshotCertErrors: every certificate that fails to load is reported
+// with its field, and a certificate for the wrong host is one of them.
+func TestSnapshotCertErrors(t *testing.T) {
+	dir := certDir(t)
+	src := base + pool + `
+[[route]]
+host = "b.test"
+pool = "p"
+cert = "certs/a.test.crt"
+key  = "certs/a.test.key"
+
+[[route]]
+host = "a.test"
+pool = "p"
+cert = "certs/missing.crt"
+key  = "certs/a.test.key"
+
+[tls]
+default_cert = "certs/default.crt"
+default_key  = "certs/a.test.key"
+`
+	c, err := Parse(filepath.Join(dir, "bad.toml"), []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewSnapshot(c)
+	if err == nil {
+		t.Fatal("bad certificates accepted")
+	}
+	var fields []string
+	for _, e := range err.(interface{ Unwrap() []error }).Unwrap() {
+		var fe *FieldError
+		if !errors.As(e, &fe) {
+			t.Fatalf("%v is not a *FieldError", e)
+		}
+		fields = append(fields, fe.Field)
+	}
+	if want := []string{"route[0].cert", "route[1].cert", "tls.default_cert"}; !reflect.DeepEqual(fields, want) {
+		t.Fatalf("fields %q, want %q\n%v", fields, want, err)
+	}
+	for _, want := range []string{
+		`bad.toml: route[0].cert: certificate is not valid for "b.test" (names [a.test])`,
+		"route[1].cert: open " + filepath.Join(dir, "certs/missing.crt"),
+		"tls.default_cert: tls: private key does not match public key",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error\n%v\nwant it to contain %q", err, want)
+		}
 	}
 }
 

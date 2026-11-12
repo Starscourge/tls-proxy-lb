@@ -10,17 +10,52 @@ import (
 // Config is a parsed and validated config file, with defaults filled in.
 // Parse and Load produce it; NewSnapshot turns it into the runtime form.
 type Config struct {
-	// Listeners are the addresses to accept client connections on. Port 0
-	// picks a free port, which tests use.
-	Listeners []string
+	// Source is the name the file was parsed under, for error messages.
+	Source string
+	// Listeners are where client connections are accepted, in file order.
+	Listeners []Listener
 	// Routes map a request's host to a pool, in file order.
 	Routes []Route
 	// DefaultPool serves hosts no route names. Empty means they get 404.
 	DefaultPool string
 	// Pools are sorted by name.
 	Pools    []Pool
+	TLS      TLS
 	Timeouts Timeouts
 	Limits   Limits
+}
+
+// Listener modes.
+const (
+	// ModeHTTPS terminates TLS and proxies. It is the default.
+	ModeHTTPS = "https"
+	// ModeHTTP proxies plain HTTP.
+	ModeHTTP = "http"
+	// ModeRedirect answers every request with a redirect to HTTPS.
+	ModeRedirect = "redirect"
+)
+
+// Modes lists the listener modes, default first.
+var Modes = []string{ModeHTTPS, ModeHTTP, ModeRedirect}
+
+// Listener is one address to accept client connections on.
+type Listener struct {
+	// Address is host:port. Port 0 picks a free port, which tests use.
+	Address string
+	// Mode is ModeHTTPS, ModeHTTP or ModeRedirect.
+	Mode string
+	// RedirectPort, for ModeRedirect only, is the port put in the HTTPS
+	// URL. 443 is left out of the URL.
+	RedirectPort int
+}
+
+// TLS holds the settings shared by every HTTPS listener.
+type TLS struct {
+	// DefaultCert and DefaultKey, if set, are served to clients whose SNI
+	// names no route with a certificate, and to clients that send no SNI.
+	// Without them those handshakes fail with unrecognized_name. Paths are
+	// resolved like route certificates.
+	DefaultCert, DefaultKey string
 }
 
 // Route sends requests for one host to one pool.
@@ -29,8 +64,9 @@ type Route struct {
 	// literals without brackets.
 	Host string
 	Pool string
-	// Cert and Key are the certificate and key files for Host. They are
-	// kept but not used until Phase 3 adds TLS.
+	// Cert and Key are the PEM certificate chain and key files for Host,
+	// both set or both empty. A relative path is resolved against the
+	// directory of the config file.
 	Cert, Key string
 }
 
@@ -47,6 +83,8 @@ type Pool struct {
 
 // Timeouts bounds every blocking step of a client connection.
 type Timeouts struct {
+	// Handshake bounds the TLS handshake on a new HTTPS connection.
+	Handshake time.Duration
 	// HeaderRead covers a whole request header block from its first byte,
 	// and the wait for the first request on a new connection.
 	HeaderRead time.Duration
@@ -65,9 +103,11 @@ type Timeouts struct {
 }
 
 // DefaultTimeouts returns the defaults from PLAN.md's config sketch, with
-// ClientIO matching nginx's client_body_timeout and send_timeout.
+// ClientIO matching nginx's client_body_timeout and send_timeout, and
+// Handshake equal to HeaderRead.
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
+		Handshake:        5 * time.Second,
 		HeaderRead:       5 * time.Second,
 		Idle:             60 * time.Second,
 		ClientIO:         60 * time.Second,
@@ -82,6 +122,7 @@ func (t Timeouts) Validate() error {
 		name string
 		d    time.Duration
 	}{
+		{"Handshake", t.Handshake},
 		{"HeaderRead", t.HeaderRead},
 		{"Idle", t.Idle},
 		{"ClientIO", t.ClientIO},

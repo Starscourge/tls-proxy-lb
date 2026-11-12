@@ -1,15 +1,18 @@
 package config
 
 import (
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 )
 
-// Snapshot is the runtime form of one Config: pools built and routes
-// indexed by host. It never changes after NewSnapshot returns, so any number
+// Snapshot is the runtime form of one Config: pools built, routes indexed
+// by host and certificates loaded. It never changes after NewSnapshot returns, so any number
 // of goroutines may read it without locks. A request loads the current
 // snapshot once and uses it to the end; a reload (Phase 7) builds a new
 // snapshot and swaps the Store's pointer, and the old one lives on until
@@ -20,24 +23,30 @@ import (
 type Snapshot struct {
 	// Listeners, Timeouts and Limits are copied from the Config. Callers
 	// must not modify Listeners.
-	Listeners []string
+	Listeners []Listener
 	Timeouts  Timeouts
 	Limits    Limits
+	// Certs are the route and default certificates, read by every TLS
+	// handshake through tlsx.ServerConfig.
+	Certs *tlsx.CertSet
 
 	pools  map[string]*lb.Pool
 	routes map[string]*lb.Pool
 	def    *lb.Pool
 }
 
-// NewSnapshot builds the pools and route table for c. c must come from
-// Parse or Load; the checks here only catch a hand-built Config that names
-// a pool it does not define.
+// NewSnapshot builds the pools and route table for c and loads its
+// certificates. c must come from Parse or Load. Certificate problems (a
+// file that does not load, a key that does not match, a certificate not
+// valid for its route's host) are reported as FieldErrors, all of them
+// joined; the other checks only catch a hand-built Config that names a pool
+// it does not define.
 func NewSnapshot(c *Config) (*Snapshot, error) {
 	if err := c.Timeouts.Validate(); err != nil {
 		return nil, err
 	}
 	s := &Snapshot{
-		Listeners: append([]string(nil), c.Listeners...),
+		Listeners: append([]Listener(nil), c.Listeners...),
 		Timeouts:  c.Timeouts,
 		Limits:    c.Limits,
 		pools:     make(map[string]*lb.Pool, len(c.Pools)),
@@ -64,7 +73,45 @@ func NewSnapshot(c *Config) (*Snapshot, error) {
 		}
 		s.def = p
 	}
+	certs, err := loadCerts(c)
+	if err != nil {
+		return nil, err
+	}
+	s.Certs = certs
 	return s, nil
+}
+
+// loadCerts reads every route certificate and the default one.
+func loadCerts(c *Config) (*tlsx.CertSet, error) {
+	var errs []error
+	fail := func(field string, err error) {
+		errs = append(errs, &FieldError{File: c.Source, Field: field, Msg: err.Error()})
+	}
+	byHost := make(map[string]*tls.Certificate)
+	for i, r := range c.Routes {
+		if r.Cert == "" {
+			continue
+		}
+		host := NormaliseHost(r.Host)
+		pair, err := tlsx.LoadPair(r.Cert, r.Key, host)
+		if err != nil {
+			fail(fmt.Sprintf("route[%d].cert", i), err)
+			continue
+		}
+		byHost[host] = pair
+	}
+	var def *tls.Certificate
+	if c.TLS.DefaultCert != "" {
+		pair, err := tlsx.LoadPair(c.TLS.DefaultCert, c.TLS.DefaultKey, "")
+		if err != nil {
+			fail("tls.default_cert", err)
+		}
+		def = pair
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return tlsx.NewCertSet(byHost, def), nil
 }
 
 // Route returns the pool for a request's Host header value: the route for

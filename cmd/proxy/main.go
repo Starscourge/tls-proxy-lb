@@ -96,13 +96,13 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	var lc net.ListenConfig
 	lns := make([]net.Listener, 0, len(snap.Listeners))
 	addrs := make([]string, 0, len(snap.Listeners))
-	for _, a := range snap.Listeners {
-		ln, err := lc.Listen(ctx, "tcp", a)
+	for _, l := range snap.Listeners {
+		ln, err := lc.Listen(ctx, "tcp", l.Address)
 		if err != nil {
 			for _, l := range lns {
 				l.Close()
 			}
-			return fmt.Errorf("listen %s: %w", a, err)
+			return fmt.Errorf("listen %s: %w", l.Address, err)
 		}
 		lns = append(lns, ln)
 		addrs = append(addrs, ln.Addr().String())

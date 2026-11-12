@@ -21,9 +21,15 @@ default_pool = "pool_b"
 
 [[listener]]
 address = "0.0.0.0:8080"
+mode    = "http"
 
 [[listener]]
 address = "127.0.0.1:0"
+
+[[listener]]
+address       = "127.0.0.1:8081"
+mode          = "redirect"
+redirect_port = 8443
 
 [[route]]
 host = "A.Test."
@@ -50,7 +56,12 @@ backends  = [{ address = "backend_3:8000" }]
 [pool.pool_c]
 backends = [{ address = "[::1]:9000" }]
 
+[tls]
+default_cert = "certs/default.crt"
+default_key  = "/etc/proxy/default.key"
+
 [timeouts]
+handshake_ms         = 1500
 header_read_ms       = 2500
 upstream_connect_ms  = 300
 upstream_response_ms = 4000
@@ -68,7 +79,12 @@ func TestParseFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &Config{
-		Listeners: []string{"0.0.0.0:8080", "127.0.0.1:0"},
+		Source: "test.toml",
+		Listeners: []Listener{
+			{Address: "0.0.0.0:8080", Mode: ModeHTTP},
+			{Address: "127.0.0.1:0", Mode: ModeHTTPS},
+			{Address: "127.0.0.1:8081", Mode: ModeRedirect, RedirectPort: 8443},
+		},
 		Routes: []Route{
 			{Host: "a.test", Pool: "pool_a", Cert: "certs/a.test.crt", Key: "certs/a.test.key"},
 			{Host: "::1", Pool: "pool_b"},
@@ -79,7 +95,9 @@ func TestParseFull(t *testing.T) {
 			{Name: "pool_b", Algorithm: lb.ConsistentHash, HashHeader: "X-User-Id", Backends: []string{"backend_3:8000"}},
 			{Name: "pool_c", Algorithm: lb.RoundRobin, Backends: []string{"[::1]:9000"}},
 		},
+		TLS: TLS{DefaultCert: "certs/default.crt", DefaultKey: "/etc/proxy/default.key"},
 		Timeouts: Timeouts{
+			Handshake:        1500 * time.Millisecond,
 			HeaderRead:       2500 * time.Millisecond,
 			Idle:             30 * time.Second,
 			ClientIO:         15 * time.Second,
@@ -96,6 +114,7 @@ func TestParseFull(t *testing.T) {
 const minimal = `
 [[listener]]
 address = ":8080"
+mode = "http"
 
 [[route]]
 host = "a.test"
@@ -128,7 +147,7 @@ func TestParseDefaults(t *testing.T) {
 
 // Several listeners on port 0 each get their own free port.
 func TestParseListenersOnPortZero(t *testing.T) {
-	src := "[[listener]]\naddress = \"127.0.0.1:0\"\n" + strings.Replace(minimal, ":8080", "127.0.0.1:0", 1)
+	src := "[[listener]]\naddress = \"127.0.0.1:0\"\nmode = \"http\"\n" + strings.Replace(minimal, ":8080", "127.0.0.1:0", 1)
 	c, err := Parse("z.toml", []byte(src))
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +168,7 @@ func TestParseDefaultPoolOnly(t *testing.T) {
 const base = `
 [[listener]]
 address = ":8080"
+mode = "http"
 `
 
 const pool = `
@@ -170,8 +190,8 @@ func TestParseRejects(t *testing.T) {
 		src  string
 		want string // expected in the error, after "bad.toml: "
 	}{
-		{"syntax", base + "[pool.p\n", `line 5 (last key "listener"): expected '.' or ']' to end table name`},
-		{"wrong type", base + route + pool + "[timeouts]\nidle_ms = \"60s\"\n", `line 12 (last key "timeouts.idle_ms"): incompatible types`},
+		{"syntax", base + "[pool.p\n", `line 6 (last key "listener"): expected '.' or ']' to end table name`},
+		{"wrong type", base + route + pool + "[timeouts]\nidle_ms = \"60s\"\n", `line 13 (last key "timeouts.idle_ms"): incompatible types`},
 		{"unknown top-level key", "listen = \":80\"\n" + base + route + pool, "listen: unknown field"},
 		{"unknown pool key", base + route + "[pool.p]\nalgoritm = \"least_conn\"\nbackends = [{ address = \"a:1\" }]\n", "pool.p.algoritm: unknown field"},
 		{"unknown backend key", base + route + "[pool.p]\nbackends = [{ adress = \"a:1\" }]\n", "pool.p.backends.adress: unknown field"},
@@ -211,6 +231,18 @@ func TestParseRejects(t *testing.T) {
 		{"timeout huge", base + route + pool + "[timeouts]\nupstream_response_ms = 86400001\n", "timeouts.upstream_response_ms: must be from 1"},
 		{"max_conns zero", base + route + pool + "[limits]\nmax_conns = 0\n", "limits.max_conns: must be from 1 to 10000000, got 0"},
 		{"max_header_bytes huge", base + route + pool + "[limits]\nmax_header_bytes = 1073741824\n", "limits.max_header_bytes: must be from 1 to 16777216"},
+		{"handshake zero", base + route + pool + "[timeouts]\nhandshake_ms = 0\n", "timeouts.handshake_ms: must be from 1"},
+		{"listener mode", "[[listener]]\naddress = \":80\"\nmode = \"tls\"\n" + route + pool, `listener[0].mode: "tls" is not one of https, http, redirect`},
+		{"redirect_port without redirect", "[[listener]]\naddress = \":80\"\nmode = \"http\"\nredirect_port = 443\n" + route + pool, `listener[0].redirect_port: is only valid with mode = "redirect"`},
+		{"redirect_port zero", "[[listener]]\naddress = \":80\"\nmode = \"redirect\"\nredirect_port = 0\n" + route + pool, "listener[0].redirect_port: must be from 1 to 65535, got 0"},
+		{"redirect_port range", "[[listener]]\naddress = \":80\"\nmode = \"redirect\"\nredirect_port = 70000\n" + route + pool, "listener[0].redirect_port: must be from 1 to 65535, got 70000"},
+		{"unknown listener key", "[[listener]]\naddress = \":80\"\nmode = \"http\"\ntls = true\n" + route + pool, "listener.tls: unknown field"},
+		{"unknown tls key", base + route + pool + "[tls]\nmin_version = \"1.3\"\n", "tls.min_version: unknown field"},
+		{"route cert without key", base + "[[route]]\nhost = \"a.test\"\npool = \"p\"\ncert = \"a.crt\"\n" + pool, "route[0].key: is required when cert is set"},
+		{"route key without cert", base + "[[route]]\nhost = \"a.test\"\npool = \"p\"\nkey = \"a.key\"\n" + pool, "route[0].cert: is required when key is set"},
+		{"default key without cert", base + route + pool + "[tls]\ndefault_key = \"d.key\"\n", "tls.default_cert: is required when default_key is set"},
+		{"https route without cert", "[[listener]]\naddress = \":443\"\n" + route + pool, "route[0].cert: is required: an https listener serves this host and [tls] has no default_cert"},
+		{"https without any cert", "default_pool = \"p\"\n[[listener]]\naddress = \":80\"\nmode = \"http\"\n[[listener]]\naddress = \":443\"\nmode = \"https\"\n" + pool, `listener[1].mode: "https" needs a certificate`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +276,53 @@ func TestParseReportsEveryError(t *testing.T) {
 	want := []string{"timeouts.idle_ms", "pool.p.algorithm", "pool.p.backends[0].address", "route[0].host", "default_pool"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields %q, want %q", fields, want)
+	}
+}
+
+// TestParseTLS: listener modes default to https, redirect listeners default
+// to port 443, certificate paths are resolved against the config file's
+// directory, and a default certificate covers routes without their own.
+func TestParseTLS(t *testing.T) {
+	src := `
+default_pool = "p"
+
+[[listener]]
+address = ":443"
+
+[[listener]]
+address = ":80"
+mode = "redirect"
+
+[[route]]
+host = "a.test"
+pool = "p"
+cert = "certs/a.crt"
+key  = "/abs/a.key"
+
+[[route]]
+host = "b.test"
+pool = "p"
+
+[tls]
+default_cert = "d.crt"
+default_key  = "d.key"
+` + pool
+	c, err := Parse("/etc/proxy/proxy.toml", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantL := []Listener{{Address: ":443", Mode: ModeHTTPS}, {Address: ":80", Mode: ModeRedirect, RedirectPort: 443}}
+	if !reflect.DeepEqual(c.Listeners, wantL) {
+		t.Errorf("listeners %+v, want %+v", c.Listeners, wantL)
+	}
+	if r := c.Routes[0]; r.Cert != "/etc/proxy/certs/a.crt" || r.Key != "/abs/a.key" {
+		t.Errorf("route paths %q %q", r.Cert, r.Key)
+	}
+	if c.TLS != (TLS{DefaultCert: "/etc/proxy/d.crt", DefaultKey: "/etc/proxy/d.key"}) {
+		t.Errorf("tls %+v", c.TLS)
+	}
+	if c.Timeouts.Handshake != 5*time.Second {
+		t.Errorf("handshake timeout %v, want the 5s default", c.Timeouts.Handshake)
 	}
 }
 

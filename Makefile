@@ -61,5 +61,9 @@ netem-check:
 wrk-race:
 	bench/phase1/wrk-race.sh
 
+# Phase 2 "Done when": balancer picks allocate nothing.
+bench-lb:
+	bench/phase2/balancers.sh
+
 clean:
 	rm -rf $(BIN)

@@ -126,6 +126,18 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+// Several listeners on port 0 each get their own free port.
+func TestParseListenersOnPortZero(t *testing.T) {
+	src := "[[listener]]\naddress = \"127.0.0.1:0\"\n" + strings.Replace(minimal, ":8080", "127.0.0.1:0", 1)
+	c, err := Parse("z.toml", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Listeners) != 2 {
+		t.Fatalf("listeners %v", c.Listeners)
+	}
+}
+
 // A default_pool alone, with no routes, is a valid catch-all config.
 func TestParseDefaultPoolOnly(t *testing.T) {
 	src := "default_pool = \"p\"\n" + strings.Replace(minimal, "[[route]]\nhost = \"a.test\"\npool = \"p\"\n", "", 1)

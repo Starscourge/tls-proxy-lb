@@ -169,11 +169,14 @@ func (v *validator) listeners(ls []fileListener) []string {
 			v.errorf(field, "%v", err)
 			continue
 		}
-		if j, dup := seen[l.Address]; dup {
-			v.errorf(field, "%q is also listener[%d]", l.Address, j)
-			continue
+		// Port 0 asks for any free port, so two such listeners never clash.
+		if _, port, _ := net.SplitHostPort(l.Address); port != "0" {
+			if j, dup := seen[l.Address]; dup {
+				v.errorf(field, "%q is also listener[%d]", l.Address, j)
+				continue
+			}
+			seen[l.Address] = i
 		}
-		seen[l.Address] = i
 		out = append(out, l.Address)
 	}
 	return out

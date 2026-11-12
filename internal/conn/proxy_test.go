@@ -34,7 +34,10 @@ func (l *logBuf) Write(p []byte) (int, error) {
 	return l.buf.Write(p)
 }
 
-func (l *logBuf) access() []map[string]any {
+func (l *logBuf) access() []map[string]any { return l.records("access") }
+
+// records returns every logged line with message msg, decoded.
+func (l *logBuf) records(msg string) []map[string]any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var out []map[string]any
@@ -44,7 +47,7 @@ func (l *logBuf) access() []map[string]any {
 		if dec.Decode(&m) != nil {
 			return out
 		}
-		if m["msg"] == "access" {
+		if m["msg"] == msg {
 			out = append(out, m)
 		}
 	}

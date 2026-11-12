@@ -3,6 +3,7 @@ package conn
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -31,9 +33,6 @@ const (
 	// read yet.
 	lingerTimeout  = 500 * time.Millisecond
 	lingerMaxBytes = 256 << 10
-
-	// forwardedProto is the X-Forwarded-Proto value; HTTPS comes in Phase 3.
-	forwardedProto = "http"
 )
 
 // StatusClientClosed is logged (never sent) when the client goes away before
@@ -43,6 +42,9 @@ const StatusClientClosed = 499
 // Proxy routes each request on a client connection by its Host header to a
 // pool, picks a backend with the pool's balancer and forwards the request
 // over a fresh upstream connection. It implements Handler.
+//
+// With TLS set, each connection starts with a TLS handshake, and every
+// request on it must name the host its SNI named (421 otherwise).
 type Proxy struct {
 	// Config holds the current config snapshot. Each request loads it once
 	// and uses that snapshot to the end.
@@ -50,6 +52,9 @@ type Proxy struct {
 	// Logger receives one "access" line per request plus errors. Nil
 	// discards.
 	Logger *slog.Logger
+	// TLS, if non-nil, makes the proxy terminate TLS (tlsx.ServerConfig).
+	// Nil serves plain HTTP.
+	TLS *tls.Config
 }
 
 // Validate checks the proxy's settings.
@@ -64,12 +69,60 @@ func (p *Proxy) Validate() error {
 // request, proxy it, write the response, repeat until either side closes,
 // a deadline passes or an error makes the framing unsafe to continue.
 func (p *Proxy) ServeConn(ctx context.Context, tc *TrackedConn) {
-	cc := newClientConn(p, tc)
+	snap := p.Config.Load()
+	cc := newClientConn(p, tc, snap)
+	if p.TLS != nil {
+		tlsConn, ok := cc.handshake(ctx)
+		if !ok {
+			return
+		}
+		// Close sends close_notify, so a client reading a close-delimited
+		// body can tell its end from a truncation. crypto/tls bounds that
+		// write at 5 seconds; the Server then closes the socket.
+		defer tlsConn.Close()
+	}
 	for first := true; cc.serveRequest(ctx, first); first = false {
 	}
 	if cc.linger {
 		cc.lingeringClose()
 	}
+}
+
+// handshake runs the TLS handshake as its own step, bounded by the
+// Handshake timeout, and switches the connection's I/O to the TLS
+// connection. A failed handshake is logged and ends the connection.
+func (cc *clientConn) handshake(ctx context.Context) (*tls.Conn, bool) {
+	start := time.Now()
+	deadline := start.Add(cc.t.Handshake)
+	// The deadline bounds every read and write of the handshake; the
+	// context also ends it if the server closes first.
+	if err := cc.tc.SetDeadline(deadline); err != nil {
+		return nil, false
+	}
+	hctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	tlsConn := tls.Server(cc.tc, cc.p.TLS)
+	err := tlsConn.HandshakeContext(hctx)
+	st := tlsConn.ConnectionState()
+	if err != nil {
+		cc.log.LogAttrs(context.Background(), slog.LevelInfo, "tls handshake failed",
+			slog.String("client", cc.ip),
+			slog.String("sni", st.ServerName),
+			slog.Bool("timeout", isTimeout(err) || errors.Is(err, context.DeadlineExceeded)),
+			slog.Float64("handshake_ms", ms(time.Since(start))),
+			slog.String("error", err.Error()))
+		return nil, false
+	}
+	if err := cc.tc.SetDeadline(time.Time{}); err != nil {
+		return nil, false
+	}
+	cc.c = tlsConn
+	cc.lr.R = tlsConn
+	cc.dw.Conn = tlsConn
+	cc.scheme = "https"
+	cc.sni = tlsx.NormaliseName(st.ServerName)
+	cc.tlsInfo = tlsInfo{version: tls.VersionName(st.Version), resumed: st.DidResume}
+	return tlsConn, true
 }
 
 // clientConn is the state of one client connection. It belongs to the
@@ -80,6 +133,17 @@ type clientConn struct {
 	tc  *TrackedConn
 	ip  string
 	log *slog.Logger
+
+	// c is what requests are read from and responses written to: tc, or
+	// the TLS connection over it once the handshake is done. tc keeps the
+	// connection's tracking state either way.
+	c net.Conn
+	// scheme is "http" or "https", sent upstream as X-Forwarded-Proto.
+	scheme string
+	// sni is the normalised server name from the TLS handshake, empty for
+	// plain HTTP or a client that sent none.
+	sni     string
+	tlsInfo tlsInfo
 
 	// t and maxHeader come from the snapshot of the current request, or of
 	// the previous one while waiting for the next. A new connection starts
@@ -100,12 +164,18 @@ type clientConn struct {
 	linger bool
 }
 
-func newClientConn(p *Proxy, tc *TrackedConn) *clientConn {
-	cc := &clientConn{p: p, tc: tc, ip: clientIP(tc.RemoteAddr()), log: p.Logger}
+// tlsInfo is what the access log reports about a connection's TLS session.
+type tlsInfo struct {
+	version string
+	resumed bool
+}
+
+func newClientConn(p *Proxy, tc *TrackedConn, snap *config.Snapshot) *clientConn {
+	cc := &clientConn{p: p, tc: tc, c: tc, scheme: "http", ip: clientIP(tc.RemoteAddr()), log: p.Logger}
 	if cc.log == nil {
 		cc.log = slog.New(slog.DiscardHandler)
 	}
-	cc.use(p.Config.Load())
+	cc.use(snap)
 	cc.lr.R = tc
 	cc.br = bufio.NewReaderSize(&cc.lr, clientReadBufferSize)
 	cc.dw = httpx.DeadlineWriter{Conn: tc, Timeout: cc.t.ClientIO}
@@ -128,7 +198,7 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	} else {
 		cc.tc.SetState(StateIdle)
 	}
-	if err := cc.tc.SetReadDeadline(time.Now().Add(wait)); err != nil {
+	if err := cc.c.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		return false
 	}
 	cc.lr.Limit(cc.maxHeader)
@@ -147,7 +217,7 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	start := time.Now()
 	cc.tc.SetState(StateActive)
 	headerDeadline := start.Add(cc.t.HeaderRead)
-	if err := cc.tc.SetReadDeadline(headerDeadline); err != nil {
+	if err := cc.c.SetReadDeadline(headerDeadline); err != nil {
 		return false
 	}
 	req, err := http.ReadRequest(cc.br)
@@ -207,6 +277,9 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	clientKeepAlive := !req.Close && req.ProtoAtLeast(1, 1)
 	head := req.Method == http.MethodHead
 
+	if reason := cc.misdirected(snap, req.Host); reason != "" {
+		return cc.reject(rec, req, http.StatusMisdirectedRequest, reason)
+	}
 	pool := snap.Route(req.Host)
 	if pool == nil {
 		return cc.reject(rec, req, http.StatusNotFound, "no route for host")
@@ -226,7 +299,7 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	defer b.Release()
 	rec.backend = b.Addr
 
-	httpx.PrepareRequest(req, cc.ip, forwardedProto)
+	httpx.PrepareRequest(req, cc.ip, cc.scheme)
 
 	upStart := time.Now()
 	uc, err := upstream.Dial(ctx, b.Addr, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
@@ -238,7 +311,7 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		if uc != nil {
 			src = &flushingReader{r: req.Body, src: cc.br, w: uc.W, wrap: wrapUpstreamErr}
 		}
-		reqBody = httpx.NewBody(src, cc.tc, cc.t.ClientIO)
+		reqBody = httpx.NewBody(src, cc.c, cc.t.ClientIO)
 		req.Body = reqBody
 	}
 	if err != nil {
@@ -322,6 +395,26 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	}
 	cc.logAccess(rec)
 	return keepAlive
+}
+
+// misdirected returns why a request for host must not be served on this
+// connection, or "" if it may. On a TLS connection the request's host must
+// be the one its SNI named: the certificate the client checked was chosen
+// for that name, and so was the pool. A connection without SNI got the
+// default certificate and belongs to the default pool, so it may not ask
+// for a host that has a route of its own. Plain HTTP has no SNI to check.
+func (cc *clientConn) misdirected(snap *config.Snapshot, host string) string {
+	if cc.scheme != "https" {
+		return ""
+	}
+	h := config.NormaliseHost(host)
+	switch {
+	case cc.sni == "" && snap.HasRoute(h):
+		return "host has a route but the connection sent no SNI"
+	case cc.sni != "" && h != cc.sni:
+		return "host does not match SNI"
+	}
+	return ""
 }
 
 // readResponse reads the backend's final response, relaying any 1xx interim
@@ -468,12 +561,19 @@ func (cc *clientConn) writeError(status int, head bool) {
 // lingeringClose half-closes the connection and drains a bounded amount of
 // unread input before the Server closes it, so the response already sent is
 // not destroyed by a reset.
+//
+// Over TLS, close_notify goes first (crypto/tls bounds that write at 5
+// seconds) and then the TCP half-close; the drain reads through the TLS
+// connection, which is what consumes the client's remaining records.
 func (cc *clientConn) lingeringClose() {
+	if tlsConn, ok := cc.c.(*tls.Conn); ok {
+		_ = tlsConn.CloseWrite()
+	}
 	if cw, ok := cc.tc.Conn.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
-	_ = cc.tc.SetReadDeadline(time.Now().Add(lingerTimeout))
-	_, _ = io.CopyN(io.Discard, cc.tc, lingerMaxBytes)
+	_ = cc.c.SetReadDeadline(time.Now().Add(lingerTimeout))
+	_, _ = io.CopyN(io.Discard, cc.c, lingerMaxBytes)
 }
 
 // bodyWriter sends a request to the backend. A request with a body is

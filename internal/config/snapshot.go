@@ -123,6 +123,13 @@ func (s *Snapshot) Route(host string) *lb.Pool {
 	return s.def
 }
 
+// HasRoute reports whether host has a route of its own, not counting the
+// default pool.
+func (s *Snapshot) HasRoute(host string) bool {
+	_, ok := s.routes[NormaliseHost(host)]
+	return ok
+}
+
 // Pool returns the pool with the given name, or nil.
 func (s *Snapshot) Pool(name string) *lb.Pool { return s.pools[name] }
 

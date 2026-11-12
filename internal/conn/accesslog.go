@@ -28,12 +28,14 @@ func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecor
 	return &accessRecord{start: start, method: req.Method, host: req.Host, path: req.URL.Path, upstream: -1}
 }
 
-// logAccess writes the access line: client IP, method, host, path, status,
-// pool, backend, upstream time, total time, body bytes in each direction, and the
-// error that ended the request, if any.
+// logAccess writes the access line: client IP, scheme, method, host, path,
+// status, pool, backend, upstream time, total time, body bytes in each
+// direction, for HTTPS the SNI, TLS version and whether the session was
+// resumed, and the error that ended the request, if any.
 func (cc *clientConn) logAccess(r *accessRecord) {
 	attrs := []slog.Attr{
 		slog.String("client", cc.ip),
+		slog.String("scheme", cc.scheme),
 		slog.String("method", r.method),
 		slog.String("host", r.host),
 		slog.String("path", r.path),
@@ -44,6 +46,12 @@ func (cc *clientConn) logAccess(r *accessRecord) {
 		slog.Float64("total_ms", ms(time.Since(r.start))),
 		slog.Int64("bytes_in", r.bytesIn),
 		slog.Int64("bytes_out", r.bytesOut),
+	}
+	if cc.scheme == "https" {
+		attrs = append(attrs,
+			slog.String("sni", cc.sni),
+			slog.String("tls_version", cc.tlsInfo.version),
+			slog.Bool("tls_resumed", cc.tlsInfo.resumed))
 	}
 	if r.err != nil {
 		attrs = append(attrs, slog.String("error", r.err.Error()))

@@ -170,16 +170,14 @@ func TestNewPool(t *testing.T) {
 	}
 }
 
-func benchPick(b *testing.B, bal Balancer, r *RequestInfo, n int) {
-	bs := backends(n)
+func benchPick(b *testing.B, bal Balancer, r *RequestInfo, bs []*Backend) {
 	b.ReportAllocs()
 	for b.Loop() {
 		bal.Pick(r, bs)
 	}
 }
 
-func benchPickParallel(b *testing.B, bal Balancer, r *RequestInfo, n int) {
-	bs := backends(n)
+func benchPickParallel(b *testing.B, bal Balancer, r *RequestInfo, bs []*Backend) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -189,17 +187,17 @@ func benchPickParallel(b *testing.B, bal Balancer, r *RequestInfo, n int) {
 }
 
 func BenchmarkRoundRobin(b *testing.B) {
-	benchPick(b, &RoundRobinBalancer{}, &RequestInfo{}, 10)
+	benchPick(b, &RoundRobinBalancer{}, &RequestInfo{}, backends(10))
 }
 
 func BenchmarkRoundRobinParallel(b *testing.B) {
-	benchPickParallel(b, &RoundRobinBalancer{}, &RequestInfo{}, 10)
+	benchPickParallel(b, &RoundRobinBalancer{}, &RequestInfo{}, backends(10))
 }
 
 func BenchmarkLeastConn(b *testing.B) {
-	benchPick(b, &LeastConnBalancer{}, &RequestInfo{}, 10)
+	benchPick(b, &LeastConnBalancer{}, &RequestInfo{}, backends(10))
 }
 
 func BenchmarkLeastConnParallel(b *testing.B) {
-	benchPickParallel(b, &LeastConnBalancer{}, &RequestInfo{}, 10)
+	benchPickParallel(b, &LeastConnBalancer{}, &RequestInfo{}, backends(10))
 }

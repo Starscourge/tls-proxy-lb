@@ -28,12 +28,13 @@ type Algorithm string
 
 // The supported algorithms.
 const (
-	RoundRobin Algorithm = "round_robin"
-	LeastConn  Algorithm = "least_conn"
+	RoundRobin     Algorithm = "round_robin"
+	LeastConn      Algorithm = "least_conn"
+	ConsistentHash Algorithm = "consistent_hash"
 )
 
 // Algorithms lists the supported algorithms, for error messages.
-var Algorithms = []Algorithm{RoundRobin, LeastConn}
+var Algorithms = []Algorithm{RoundRobin, LeastConn, ConsistentHash}
 
 // Pool is a named, fixed set of backends and the balancer that spreads
 // requests across them. A pool does not change once built.
@@ -46,6 +47,12 @@ type Pool struct {
 // PoolOptions configures NewPool.
 type PoolOptions struct {
 	Algorithm Algorithm
+	// HashHeader keys ConsistentHash on a request header instead of the
+	// client IP. Requests without the header fall back to the client IP.
+	HashHeader string
+	// VirtualNodes is the number of ring points per backend for
+	// ConsistentHash. Zero means DefaultVirtualNodes.
+	VirtualNodes int
 }
 
 // NewPool builds a pool with one backend per address.
@@ -63,6 +70,8 @@ func NewPool(name string, addrs []string, opts PoolOptions) (*Pool, error) {
 		p.Balancer = &RoundRobinBalancer{}
 	case LeastConn:
 		p.Balancer = &LeastConnBalancer{}
+	case ConsistentHash:
+		p.Balancer = NewRingBalancer(backends, opts.VirtualNodes, opts.HashHeader)
 	default:
 		return nil, fmt.Errorf("lb: pool %q: unknown algorithm %q", name, opts.Algorithm)
 	}

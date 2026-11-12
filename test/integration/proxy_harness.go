@@ -45,6 +45,9 @@ type ProxyOptions struct {
 	// .test completes a handshake unless the config gives it a certificate
 	// of its own.
 	Scheme string
+	// NoDefaultCert leaves the *.test default certificate out (HTTPS only),
+	// so names without a certificate of their own fail the handshake.
+	NoDefaultCert bool
 	// Timeouts are written to the config's [timeouts] table, in whole
 	// milliseconds.
 	Timeouts       config.Timeouts
@@ -111,8 +114,10 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 		if ca == nil {
 			ca = tlstest.NewCA(t)
 		}
-		ca.WriteFiles(t, dir, "harness-default", tlstest.LeafOptions{}, "*.test")
-		src.WriteString("\n[tls]\ndefault_cert = \"harness-default.crt\"\ndefault_key = \"harness-default.key\"\n")
+		if !opts.NoDefaultCert {
+			ca.WriteFiles(t, dir, "harness-default", tlstest.LeafOptions{}, "*.test")
+			src.WriteString("\n[tls]\ndefault_cert = \"harness-default.crt\"\ndefault_key = \"harness-default.key\"\n")
+		}
 	}
 	src.WriteString("\n[timeouts]\n")
 	for _, f := range []struct {

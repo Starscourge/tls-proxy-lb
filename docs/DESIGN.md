@@ -502,3 +502,216 @@ round-robin default pool (which the container healthcheck also hits),
 `-check-config` inside the container and checks each route. Because the
 healthcheck shares the default pool, it checks that six requests reach all
 three backends rather than exactly two each.
+
+## Phase 3: TLS termination and SNI routing
+
+### The handshake is its own step in the connection goroutine
+
+With `Proxy.TLS` set, `ServeConn` wraps the accepted connection in
+`tls.Server` and calls `HandshakeContext` before reading any request. The
+handshake has its own timeout, `timeouts.handshake_ms` (default 5 s, like
+`header_read_ms`), applied twice: as a deadline on the socket, which
+bounds every read and write of the handshake, and as the context's
+deadline, which also ends it when the server closes. A failed handshake
+writes one `tls handshake failed` log line (client, SNI if one was read,
+whether it timed out, the error) and closes; it has no access line
+because there was no request.
+
+The first request on a connection then gets `header_read_ms` from the end
+of the handshake, so a new HTTPS client has up to handshake plus header
+time before it must have sent a request. The rejected alternative, one
+budget for both, would make the header timeout depend on handshake cost.
+
+Read timeouts on a `tls.Conn` are not sticky (crypto/tls keeps the
+connection usable after a read deadline), so the idle wait and
+`Body.Abort` work as they did on TCP. Write timeouts are sticky, which
+does not matter because every write error already ends the connection.
+`tls.Conn` allows one reader and one writer at once, which is what the
+request-body writer goroutine and the connection goroutine do.
+
+### Listener modes, HTTPS by default
+
+Each `[[listener]]` has `mode = "https" | "http" | "redirect"`. A missing
+mode means HTTPS, so a config cannot serve plaintext by accident; a plain
+listener must say `mode = "http"`, and a file with an HTTPS listener and
+no certificates fails `-check-config`. The rejected alternative, plain
+HTTP by default as in nginx, keeps old configs working but fails open.
+`conn.Server.Serve` takes the handler per listener, so all modes share
+one connection tracker and one cap.
+
+### Certificates live in the snapshot
+
+`cert`/`key` on a route and `default_cert`/`default_key` in `[tls]` are
+paths resolved against the config file's directory. `NewSnapshot` loads
+them into a `tlsx.CertSet` (normalised host to certificate, plus the
+default) and rejects, by field, a file that does not load, a key that
+does not match, or a certificate whose names do not cover its route's
+host. Expired or soon-to-expire certificates (30 days) only warn, at
+startup and in `-check-config`: serving an expired certificate with a
+warning is better than refusing to start. Loading in `NewSnapshot` means
+`-check-config` checks certificates too, and a Phase 7 reload rereads
+them, which is how renewed certificates get picked up. The cost is that a
+reload reads every certificate file, not just changed ones.
+
+Validation requires a certificate for every route reachable over HTTPS:
+either the route has its own or there is a default. Routes are exact host
+matches; wildcard routes were left out (a wildcard certificate can still
+be a route's or the default certificate).
+
+### One tls.Config for the process; certificates come from the snapshot
+
+`tlsx.ServerConfig` returns one `tls.Config` shared by every HTTPS
+listener. Its `GetCertificate` loads the current snapshot's `CertSet` on
+each handshake. The alternative, building a `tls.Config` per snapshot
+(through `GetConfigForClient`), would give each config its own session
+ticket keys, so every reload would invalidate every ticket. With one
+config, tickets issued on one port resume on another and survive
+reloads. crypto/tls generates the ticket keys and rotates them on its
+own (a new key daily, each valid for a week). They are per process: two
+proxy instances behind one address do not share tickets, and a restart
+invalidates them all. Sharing them would mean managing ticket keys,
+which is not worth it here.
+
+After a reload, a connection's certificate may come from one snapshot
+and its first request's route from the next. That is harmless: both
+were valid configs a moment apart.
+
+### Unknown or missing SNI: the default certificate or unrecognized_name
+
+`Lookup` returns the route host's certificate, else the default, else
+nil. `GetCertificate` returning `nil, nil` with `tls.Config.Certificates`
+empty makes crypto/tls send `unrecognized_name` (checked in its source
+and in tests). The choice is made by configuration alone: setting
+`default_cert` means unknown and missing names get it; leaving it out
+means their handshakes fail.
+
+crypto/tls refuses a ClientHello whose server name ends in a dot and
+keeps its case; the proxy lower-cases it. Some clients (busybox `wget`,
+the lab's healthcheck) send an IP literal as SNI, which RFC 6066 forbids;
+it is treated as any unknown name.
+
+### SNI and Host must agree, and no SNI means the default pool
+
+On a TLS connection, a request whose normalised `Host` (no port, no
+trailing dot, lower case) differs from the normalised SNI gets 421
+Misdirected Request and the connection closes, like every response the
+proxy generates. The certificate the client verified was chosen for the
+SNI name; serving another host on that connection would let a client
+reach a pool with a certificate that was never checked for it, and makes
+SNI-based filtering in front of the proxy pointless. The check runs
+before routing, so the route is in effect chosen by SNI. For an
+absolute-form request (`GET https://b.test/`) `http.ReadRequest` takes
+the host from the URL, and the check uses that.
+
+A connection without SNI got the default certificate, so it belongs to
+the default pool: a `Host` with a route of its own gets 421, and any
+other host goes to the default pool (or 404). The rejected alternative,
+routing SNI-less requests by `Host` as nginx does, would let a client
+that never named `a.test` in the handshake reach `a.test`'s pool. Real
+clients always send SNI for host names, so the cost is limited to IP
+clients asking for named hosts.
+
+Plain HTTP listeners do no such check.
+
+### TLS settings
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Versions | TLS 1.2 and 1.3 | 1.0 and 1.1 are deprecated (RFC 8996) |
+| TLS 1.2 suites | ECDHE-ECDSA and ECDHE-RSA with AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 | ECDHE gives forward secrecy, AEAD removes CBC padding attacks; RSA variants are there for RSA certificates |
+| TLS 1.3 suites | crypto/tls's three | Not configurable in Go; all are AEAD, and the key exchange is always ephemeral (crypto/tls resumes only with `psk_dhe_ke`) |
+| Key exchange groups | Go's defaults | As testssl.sh sees them: X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024 (hybrid post-quantum), X25519, P-256, P-384, P-521 |
+| Suite order | Go's | Prefers AES-GCM with AES hardware, ChaCha20 when the client prefers it |
+| ALPN | `http/1.1` | A client offering only `h2` fails with no_application_protocol; `h2,http/1.1` (browsers, curl) gets `http/1.1` |
+| Resumption | Session tickets | See above; crypto/tls has no server-side session cache |
+
+Forward secrecy comes from the ephemeral (EC)DHE key exchange: the
+certificate key only signs the handshake, so a stolen key does not
+decrypt recorded traffic. The suite list pinned for TLS 1.2 is what
+guarantees it there, since the static-RSA suites are not in it. The
+ticket keys are the remaining exception: anyone holding them can decrypt
+resumed sessions made with them, which is one reason crypto/tls rotates
+them.
+
+### Closing a TLS connection
+
+`ServeConn` closes the `tls.Conn` on the way out, which sends
+`close_notify`, so a client reading a close-delimited body (HTTP/1.0)
+can tell the end from a truncation. crypto/tls bounds that write at 5
+seconds. The lingering close after an error over TLS sends `close_notify`
+first, then the TCP half-close, then drains through the TLS connection,
+because only reading the remaining records consumes the client's unread
+bytes.
+
+### Redirect listener
+
+`mode = "redirect"` answers every request with 308 Permanent Redirect to
+`https://host[:redirect_port]/uri` (the port is left out when it is 443)
+and closes. 308 rather than 301 because it keeps the method and body, so
+a POST to the HTTP port is not silently turned into a GET. Only hosts the
+proxy would serve are redirected (a host with a route, or any host if
+there is a default pool); others get 404, so the listener cannot bounce
+clients to an arbitrary site through a forged `Host`. The request is
+read with the proxy's own deadlines and header limit, reusing the same
+connection code with a flag that replaces proxying.
+
+### Access log
+
+Lines carry `scheme`, and on HTTPS also `sni`, `tls_version` and
+`tls_resumed`. `X-Forwarded-Proto` is `https` on TLS listeners.
+
+### Tests
+
+`internal/tlsx/tlstest` issues a CA and ECDSA certificates in memory, so
+no test needs openssl except the ones about openssl. Every Phase 1 and 2
+integration test runs as an `http` and an `https` subtest. The harness's
+HTTPS proxy has a `*.test` default certificate, and its client resolves
+every host to the proxy, so the host in a URL is both SNI and `Host`.
+
+Two things in the openssl checks would otherwise pass for the wrong
+reason:
+
+- OpenSSL 3 at its default security level refuses to offer TLS 1.0 or
+  1.1 at all (`no protocols available`), so `s_client -tls1_1` fails
+  without ever reaching the proxy. The test passes `-cipher
+  DEFAULT@SECLEVEL=0` and requires the proxy's `protocol_version` alert.
+- `s_client -reconnect` in OpenSSL 3.0 reconnects before the TLS 1.3
+  ticket arrives (it is sent after the handshake), so it never shows
+  reuse for TLS 1.3. `-reconnect` is checked for TLS 1.2; TLS 1.3 is
+  checked with `-sess_out` after a request and `-sess_in`, and with Go's
+  client (`DidResume`).
+
+### Lab
+
+The proxy serves HTTPS on 8443 and redirects from 8080. Certificates
+come from `lab/gen-certs.sh` (now also `default.test`, and 397 days, the
+most browsers accept) and are mounted read-only. The keys stay mode 0600
+and owned by the user, and the proxy container runs as that user
+(`LAB_UID`/`LAB_GID`, exported by `make lab-up` and `check-lab.sh`). The
+rejected alternatives were group- or world-readable keys, or copying them
+into the image. The container healthcheck uses busybox `wget`, which
+does verify certificates on Alpine, hence `--no-check-certificate`.
+
+### testssl.sh runs inside the lab network
+
+`bench/phase3/testssl.sh` runs testssl.sh 3.2.5 from its image, pinned by
+digest, on the lab network against the proxy container, with the lab CA
+trusted. Running it with `--network host` against a proxy on localhost
+was tried first and fails under Docker Desktop, whose containers cannot
+reach the WSL host's loopback. The script fails if the scan has no
+protocol or cipher section (a scan that never connected must not pass)
+or rates anything in them LOW or worse.
+
+Result (`docs/testssl-phase3.txt`): TLS 1.2 and 1.3 only, ECDHE with
+AEAD only, no vulnerabilities, grade A+. The remaining notes are not
+about TLS settings: no OCSP or CRL URL (the lab CA has none), no CAA
+record, and no HSTS or security headers in the test backend's responses.
+HSTS belongs to the origin; a header-adding option in the proxy would be
+a separate feature.
+
+### Results
+
+On the development machine (WSL2, `-race`): the 1 GB slow-reader test
+reads at 44 MB/s over HTTPS (92 MB/s plain) with heap growth of 2.3 MiB
+(0.3 MiB plain), from TLS record buffers per connection. 200 keep-alive
+HTTPS clients return goroutines and fds to baseline (5 → 214 → 5, 9 → 9).

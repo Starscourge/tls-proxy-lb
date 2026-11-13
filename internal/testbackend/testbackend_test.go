@@ -415,8 +415,8 @@ func TestStats(t *testing.T) {
 // HealthzFail fails /healthz alone; SetHealthy switches it at run time.
 func TestHealthzFail(t *testing.T) {
 	s, base, c := start(t, Config{Name: "alpha", HealthzFail: true})
-	if resp, _ := get(t, c, base+"/healthz"); resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("/healthz: %d, want 503", resp.StatusCode)
+	if resp, _ := get(t, c, base+"/healthz"); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("/healthz: %d, want 500", resp.StatusCode)
 	}
 	if resp, body := get(t, c, base+"/"); resp.StatusCode != 200 || body != "hello from alpha\n" {
 		t.Fatalf("/: %d %q", resp.StatusCode, body)
@@ -426,7 +426,7 @@ func TestHealthzFail(t *testing.T) {
 		t.Fatalf("/healthz after SetHealthy(true): %d %q", resp.StatusCode, body)
 	}
 	s.SetHealthy(false)
-	if resp, _ := get(t, c, base+"/healthz"); resp.StatusCode != http.StatusServiceUnavailable {
+	if resp, _ := get(t, c, base+"/healthz"); resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("/healthz after SetHealthy(false): %d", resp.StatusCode)
 	}
 }

@@ -9,7 +9,7 @@
 // Endpoints:
 //
 //	/         200 with a short text body naming the backend (catch-all path)
-//	/healthz  200 "ok", or 503 while the backend is marked unhealthy
+//	/healthz  200 "ok", or 500 while the backend is marked unhealthy
 //	          (Config.HealthzFail, SetHealthy)
 //	/echo     200 with the request body streamed back unchanged, flushed per read
 //	/slow     200 after sleeping ?ms=N milliseconds (default 5000)
@@ -60,7 +60,7 @@ type Config struct {
 	// FailRate is the probability, in [0, 1], that a request gets a 500
 	// instead of its normal response.
 	FailRate float64
-	// HealthzFail starts the backend with /healthz answering 503, while
+	// HealthzFail starts the backend with /healthz answering 500, while
 	// every other endpoint works. SetHealthy changes it.
 	HealthzFail bool
 	// Logger receives one line per request. Nil discards the log.
@@ -110,7 +110,7 @@ type Server struct {
 	hmu      sync.Mutex
 	stopped  bool
 	inflight atomic.Int64
-	// healthDown makes /healthz answer 503.
+	// healthDown makes /healthz answer 500.
 	healthDown atomic.Bool
 
 	// Connection and request counts for Stats, kept by the http.Server's
@@ -341,14 +341,14 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	if s.healthDown.Load() {
-		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+		http.Error(w, "unhealthy", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	io.WriteString(w, "ok\n")
 }
 
-// SetHealthy makes /healthz answer 200 (true) or 503 (false). Other
+// SetHealthy makes /healthz answer 200 (true) or 500 (false). Other
 // endpoints are not affected.
 func (s *Server) SetHealthy(ok bool) { s.healthDown.Store(!ok) }
 

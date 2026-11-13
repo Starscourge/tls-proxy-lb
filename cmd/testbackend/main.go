@@ -41,7 +41,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&o.name, "name", host, "backend name, returned in the X-Backend header")
 	fs.IntVar(&o.delayMS, "delay-ms", 0, "milliseconds to wait before every response")
 	fs.Float64Var(&o.failRate, "fail-rate", 0, "probability in [0,1] that a request gets a 500")
-	fs.BoolVar(&o.healthzFail, "healthz-fail", false, "answer /healthz with 503 while every other endpoint works")
+	fs.BoolVar(&o.healthzFail, "healthz-fail", false, "answer /healthz with 500 while every other endpoint works")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}

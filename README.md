@@ -8,10 +8,12 @@ it uses only the parsers and serialisers (`ReadRequest`, `ReadResponse`,
 `Request.Write`, `Response.Write`, `Header`). `http.Server`, `http.Transport`,
 `http.Client` and `httputil.ReverseProxy` are not used on the request path.
 
-**Status:** Phase 3 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
+**Status:** Phase 4 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
 certificate and the pool on one port; round-robin, least-connections or
-consistent hashing across each pool, from a TOML config file). Upstream
-connection reuse arrives in Phase 4.
+consistent hashing across each pool, from a TOML config file; upstream
+connections kept alive and reused through the proxy's own pool; pprof on a
+loopback admin listener). Health checks, retries across backends and
+metrics arrive in Phase 5.
 
 ## Layout
 
@@ -19,7 +21,7 @@ connection reuse arrives in Phase 4.
 cmd/proxy/         the proxy
 cmd/testbackend/   test backend for tests and the lab
 internal/          proxy packages (conn, httpx, tlsx, lb, upstream, health,
-                   ratelimit, config, admin) and the test backend library
+                   ratelimit, config, admin, logbuf) and the test backend library
 test/integration/  end-to-end tests and their helpers
 bench/             benchmark and demo scripts, raw results
 lab/               Docker Compose lab, certificate script
@@ -45,6 +47,11 @@ make lab-up             # proxy, three backends and a load generator in Docker
 make lab-check          # bring the lab up and check backends, proxy routes and netem
 make lab-down
 bench/phase1/wrk-race.sh   # wrk -c 200 -d 30s against a -race proxy build
+make bench-allocs       # allocations per request (bench/phase4/results/allocs-*.txt)
+make bench-reuse        # wrk with upstream reuse off and on, new connections per second
+make wrk-race-reuse     # wrk GET and POST /echo against a -race build, reuse on
+make bench-scaling      # throughput at GOMAXPROCS 1, 2 and 4
+make bench-profile      # mutex, block and CPU profiles under load
 ```
 
 ## Running the proxy
@@ -86,7 +93,7 @@ field (`pool.web.backends[1].address: "127.0.0.1" is not host:port:
 missing port in address`, `route[0].cert: certificate is not valid for
 "b.test" (names [a.test])`). Certificates expiring within 30 days are
 reported as warnings. One JSON access-log line per request goes to
-stdout, with the host, pool, backend and, for HTTPS, the SNI, TLS version
+stdout, through a buffer flushed every second and on exit, with the host, pool, backend and, for HTTPS, the SNI, TLS version
 and whether the session was resumed.
 
 ### Config file
@@ -128,6 +135,19 @@ upstream_response_ms = 10000
 [limits]                        # optional; defaults shown
 max_conns        = 10000
 max_header_bytes = 65536
+
+[upstream]                      # optional; defaults shown
+max_idle_per_backend = 100      # idle keep-alive connections per backend address; 0 = no reuse
+idle_timeout_ms      = 30000    # idle connections older than this are closed
+
+[admin]                         # optional; no admin listener without it
+address                = "127.0.0.1:9090"  # loopback only; serves /debug/pprof/
+mutex_profile_fraction = 0      # >0 turns the mutex profile on (runtime.SetMutexProfileFraction)
+block_profile_rate_ns  = 0      # >0 turns the block profile on (runtime.SetBlockProfileRate)
+
+[log]                           # optional; defaults shown
+buffer_bytes = 65536            # log lines are buffered; 0 writes each line at once
+flush_ms     = 1000             # the most a line waits, and the most a crash can lose
 ```
 
 Unknown keys are errors. TLS: versions 1.2 and 1.3 only; TLS 1.2 limited
@@ -143,7 +163,15 @@ backpressure, hop-by-hop header removal, `X-Forwarded-For` and
 `X-Forwarded-Proto` (`http` or `https`), `100 Continue`, and 400, 404,
 408, 421, 431, 502 and 504 on the failures they name. Consistent hashing uses 160 virtual nodes per
 backend; requests without the hash header are keyed on the client IP. Each
-request opens a new upstream connection; reuse is Phase 4.
+backend address has a LIFO pool of idle keep-alive connections, shared by
+every pool that lists the address. A connection is reused only after a
+clean exchange; one the backend closed while idle is found by a
+non-blocking peek before use, and a request that meets a connection dying
+under it is retried once on a new one, if it has no body and is
+idempotent or was never sent. The access log reports `reused` (and
+`retried`). Reuse doubles throughput under `wrk -c 100` and brings new
+upstream connections to about zero after warm-up
+(`bench/phase4/results/`).
 
 ## Test backend
 
@@ -153,9 +181,10 @@ go run ./cmd/testbackend -port 8000 -name b1 -delay-ms 0 -fail-rate 0
 
 Every response carries `X-Backend: <name>`. Endpoints: `/` (catch-all),
 `/healthz`, `/echo` (streams the request body back), `/slow?ms=N`
-(default 5000) and `/bytes?n=N[&chunked=1]` (N bytes of a fixed pattern).
-`-delay-ms` and `-fail-rate` apply to every endpoint. Each request is logged
-as one JSON line.
+(default 5000), `/bytes?n=N[&chunked=1]` (N bytes of a fixed pattern) and
+`/stats` (connections accepted and open, and requests served, as JSON).
+`-delay-ms` and `-fail-rate` apply to every endpoint except `/stats`.
+Each request other than `/stats` is logged as one JSON line.
 
 ## Lab
 

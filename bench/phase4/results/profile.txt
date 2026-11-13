@@ -1,0 +1,163 @@
+# Phase 4: mutex, block and CPU profiles under load
+date:     2026-11-13T06:56:02Z
+commit:   3434c76
+go:       go1.27.4 linux/amd64
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+pinning:  proxy 0,2,4,6 (first GOMAXPROCS of them), backends 8-15, wrk 16-21
+proxy:    GOMAXPROCS 4, 3 test backends, round-robin, upstream reuse on,
+          mutex_profile_fraction 10, block_profile_rate_ns 10000
+load:     wrk -t6 -c100 -d25s --latency http://127.0.0.1:18080/
+profiles: 10s windows from t=5s: mutex.pprof, block.pprof, cpu.pprof
+          (go tool pprof -top <file>; -peek <regexp> shows callers)
+
+    Latency     1.67ms    1.36ms  23.22ms   84.85%
+     99%    7.00ms
+Requests/sec:  63855.63
+
+mutex wait: 254 ms over the 10 s window, about 0.40 us per request at 63855.63 req/s
+
+## mutex contention by lock site (callers of Unlock; runtime.unlock is the runtime's own locks)
+      flat  flat%   sum%        cum   cum%   calls calls% + context 	 	 
+----------------------------------------------------------+-------------
+                                       152736.63us 87.19% |   log/slog.(*commonHandler).handle
+                                        11650.42us  6.65% |   github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).pop (inline)
+                                         8789.91us  5.02% |   sync.(*Pool).pinSlow
+                                         2002.27us  1.14% |   github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).Put (inline)
+175179.22us 68.84% 68.84% 175179.22us 68.84%                | sync.(*Mutex).Unlock
+----------------------------------------------------------+-------------
+                                        25002.44us 31.54% |   runtime.stackcacherefill (inline)
+                                         9699.25us 12.24% |   runtime.entersyscallHandleGCWait (inline)
+                                         8257.42us 10.42% |   runtime.runSafePointFn (inline)
+                                         7393.28us  9.33% |   runtime.forEachPInternal (inline)
+                                         6785.76us  8.56% |   runtime.wakep (inline)
+                                         5255.37us  6.63% |   runtime.stopTheWorldWithSema (inline)
+                                         2766.53us  3.49% |   runtime.goschedImpl (inline)
+                                         2505.53us  3.16% |   runtime.incidlelocked (inline)
+                                         2392.56us  3.02% |   runtime.gcstopm (inline)
+                                         2143.35us  2.70% |   runtime.stopm (inline)
+                                         1546.25us  1.95% |   runtime.findRunnable (inline)
+                                         1400.34us  1.77% |   runtime.exitsyscallNoP (inline)
+                                          981.35us  1.24% |   runtime.stackcacherelease (inline)
+                                          888.26us  1.12% |   runtime.startTheWorldWithSema (inline)
+                                          512.75us  0.65% |   runtime.startm (inline)
+                                          456.82us  0.58% |   runtime.injectglist.func1 (inline)
+                                          435.72us  0.55% |   runtime.(*mheap).allocSpan (inline)
+                                          391.94us  0.49% |   runtime.(*mheap).freeSpan.func1
+                                          198.69us  0.25% |   runtime.(*timer).unlock (inline)
+                                          108.36us  0.14% |   runtime.gcParkAssist (inline)
+                                           71.53us  0.09% |   runtime.(*mheap).freeManual (inline)
+                                              38us 0.048% |   runtime.stackcache_clear (inline)
+                                           37.52us 0.047% |   runtime.freeStackSpans (inline)
+                                            2.37us 0.003% |   runtime.(*pageAlloc).scavengeOne (inline)
+                                            1.26us 0.0016% |   runtime.parkunlock_c (inline)
+79272.67us 31.15%   100% 79272.67us 31.15%                | runtime.unlock
+----------------------------------------------------------+-------------
+
+## mutex contention (delay), top 15
+Showing nodes accounting for 254.45ms, 100% of 254.47ms total
+Dropped 89 nodes (cum <= 1.27ms)
+Showing top 15 nodes out of 133
+      flat  flat%   sum%        cum   cum%
+  175.18ms 68.84% 68.84%   175.18ms 68.84%  sync.(*Mutex).Unlock
+   79.27ms 31.15%   100%    79.27ms 31.15%  runtime.unlock (inline)
+         0     0%   100%     6.75ms  2.65%  bufio.(*Reader).Peek
+         0     0%   100%     4.50ms  1.77%  bufio.(*Reader).ReadLine
+         0     0%   100%     4.50ms  1.77%  bufio.(*Reader).ReadSlice
+         0     0%   100%    11.25ms  4.42%  bufio.(*Reader).fill
+         0     0%   100%     3.29ms  1.29%  bufio.(*Writer).Flush
+         0     0%   100%    15.61ms  6.14%  encoding/json.(*Encoder).Encode
+         0     0%   100%    15.23ms  5.99%  encoding/json/internal/jsonwire.AppendFloat
+         0     0%   100%    15.60ms  6.13%  encoding/json/v2.MarshalEncode
+         0     0%   100%    15.23ms  5.99%  encoding/json/v2.makeFloatArshaler.func1
+         0     0%   100%    15.60ms  6.13%  encoding/json/v2.marshalEncode
+         0     0%   100%   224.69ms 88.30%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0%   100%   175.18ms 68.84%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).Serve.gowrap2
+         0     0%   100%   224.69ms 88.30%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+
+## mutex contention by caller of Lock, cumulative, top 25
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%   224.69ms 88.30%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0%     0%   224.69ms 88.30%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+         0     0%     0%   224.69ms 88.30%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+         0     0%     0%   210.73ms 82.81%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+         0     0%     0%   175.18ms 68.84%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).Serve.gowrap2
+  175.18ms 68.84% 68.84%   175.18ms 68.84%  sync.(*Mutex).Unlock
+         0     0% 68.84%   171.33ms 67.33%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).logAccess
+         0     0% 68.84%   171.33ms 67.33%  log/slog.(*Logger).LogAttrs (inline)
+         0     0% 68.84%   171.33ms 67.33%  log/slog.(*Logger).logAttrs
+         0     0% 68.84%   168.83ms 66.35%  log/slog.(*JSONHandler).Handle
+         0     0% 68.84%   168.83ms 66.35%  log/slog.(*commonHandler).handle
+   79.27ms 31.15%   100%    79.27ms 31.15%  runtime.unlock (partial-inline)
+         0     0%   100%    41.69ms 16.38%  runtime.systemstack
+         0     0%   100%    26.40ms 10.38%  runtime.copystack
+         0     0%   100%    25.42ms  9.99%  runtime.stackalloc
+         0     0%   100%    25.42ms  9.99%  runtime.stackcacherefill
+         0     0%   100%    25.40ms  9.98%  runtime.newstack
+         0     0%   100%    19.16ms  7.53%  runtime.mallocgc
+         0     0%   100%    17.49ms  6.87%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).exchange
+         0     0%   100%    16.57ms  6.51%  runtime.gcAssistAlloc
+         0     0%   100%    15.91ms  6.25%  log/slog.(*handleState).appendAttr
+         0     0%   100%    15.91ms  6.25%  log/slog.(*handleState).appendNonBuiltIns
+         0     0%   100%    15.91ms  6.25%  log/slog.(*handleState).appendNonBuiltIns.func1 (inline)
+         0     0%   100%    15.91ms  6.25%  log/slog.(*handleState).appendValue
+         0     0%   100%    15.91ms  6.25%  log/slog.Record.Attrs (inline)
+
+## blocking (delay), top 15
+Showing nodes accounting for 30346.18ms, 100% of 30351.77ms total
+Dropped 46 nodes (cum <= 151.76ms)
+Showing top 15 nodes out of 24
+      flat  flat%   sum%        cum   cum%
+29577.07ms 97.45% 97.45% 29577.07ms 97.45%  runtime.selectgo
+  769.11ms  2.53%   100%   769.11ms  2.53%  sync.(*Mutex).Lock (inline)
+         0     0%   100%   774.70ms  2.55%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0%   100%   774.70ms  2.55%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).Serve.gowrap2
+         0     0%   100%   774.70ms  2.55%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+         0     0%   100%   752.69ms  2.48%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).logAccess
+         0     0%   100%   771.55ms  2.54%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+         0     0%   100%   774.70ms  2.55%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+         0     0%   100%  9576.46ms 31.55%  github.com/Starscourge/tls-proxy-lb/internal/logbuf.(*Writer).flusher
+         0     0%   100%  9576.46ms 31.55%  github.com/Starscourge/tls-proxy-lb/internal/logbuf.New.gowrap1
+         0     0%   100%   752.69ms  2.48%  log/slog.(*JSONHandler).Handle
+         0     0%   100%   752.69ms  2.48%  log/slog.(*Logger).LogAttrs (inline)
+         0     0%   100%   752.69ms  2.48%  log/slog.(*Logger).logAttrs
+         0     0%   100%   752.69ms  2.48%  log/slog.(*commonHandler).handle
+         0     0%   100% 20000.61ms 65.90%  net/http.(*ServeMux).ServeHTTP
+
+## CPU, top 30
+Showing nodes accounting for 25.18s, 66.35% of 37.95s total
+Dropped 535 nodes (cum <= 0.19s)
+Showing top 30 nodes out of 177
+      flat  flat%   sum%        cum   cum%
+    19.81s 52.20% 52.20%     19.81s 52.20%  internal/runtime/syscall/linux.Syscall6
+     0.46s  1.21% 53.41%      0.46s  1.21%  log/slog.Value.Kind (inline)
+     0.41s  1.08% 54.49%      0.41s  1.08%  time.runtimeNow
+     0.35s  0.92% 55.42%      0.35s  0.92%  runtime.memmove
+     0.33s  0.87% 56.28%      0.33s  0.87%  runtime.nanotime (inline)
+     0.32s  0.84% 57.13%     32.22s 84.90%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+     0.29s  0.76% 57.89%      0.33s  0.87%  log/slog.appendEscapedJSONString
+     0.27s  0.71% 58.60%      0.27s  0.71%  internal/runtime/maps.memHashAES
+     0.21s  0.55% 59.16%      0.27s  0.71%  runtime.mallocgcSmallScanNoHeaderSC2
+     0.19s   0.5% 59.66%      0.27s  0.71%  runtime.ifaceeq
+     0.19s   0.5% 60.16%      0.34s   0.9%  sync.(*Pool).Get
+     0.17s  0.45% 60.61%      0.83s  2.19%  internal/poll.runtime_pollSetDeadline
+     0.17s  0.45% 61.05%      0.35s  0.92%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+     0.16s  0.42% 61.48%     36.26s 95.55%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+     0.15s   0.4% 61.87%      0.41s  1.08%  fmt.(*pp).printArg
+     0.15s   0.4% 62.27%      1.68s  4.43%  net/textproto.readMIMEHeader
+     0.15s   0.4% 62.66%      0.20s  0.53%  runtime.step
+     0.14s  0.37% 63.03%      0.41s  1.08%  runtime.mallocgcTinySC2
+     0.14s  0.37% 63.40%      0.27s  0.71%  sync.(*Pool).Put
+     0.11s  0.29% 63.69%      0.26s  0.69%  github.com/Starscourge/tls-proxy-lb/internal/conn.noReadFrom.WriteString
+     0.11s  0.29% 63.98%      3.18s  8.38%  internal/poll.(*FD).Read
+     0.11s  0.29% 64.27%      0.28s  0.74%  net/http.newTransferWriter
+     0.11s  0.29% 64.56%      0.36s  0.95%  runtime.(*timer).modify
+     0.11s  0.29% 64.85%      0.27s  0.71%  runtime.(*unwinder).resolveInternal
+     0.10s  0.26% 65.11%      1.76s  4.64%  net/http.(*Request).write
+     0.10s  0.26% 65.38%      0.56s  1.48%  net/http.Header.sortedKeyValues
+     0.10s  0.26% 65.64%      0.31s  0.82%  runtime.pcvalue
+     0.09s  0.24% 65.88%      2.44s  6.43%  log/slog.(*handleState).appendAttr
+     0.09s  0.24% 66.11%      0.46s  1.21%  log/slog.(*handleState).appendString
+     0.09s  0.24% 66.35%      0.59s  1.55%  runtime.mapaccess2_faststr
+
+proxy exit code: 0

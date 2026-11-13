@@ -28,6 +28,13 @@ type Backend struct {
 	Addr string
 	// URL is "http://" + Addr.
 	URL string
+
+	t    testing.TB
+	name string
+	opts BackendOptions
+	stop func() // shuts down the current Server
+	// listenAddr is where the current Server listens.
+	listenAddr string
 }
 
 // BackendOptions configures the backends started by StartBackends. The zero
@@ -55,39 +62,58 @@ func StartBackends(t testing.TB, n int, opts BackendOptions) []*Backend {
 // StartBackend starts one named backend. It is shut down when the test ends.
 func StartBackend(t testing.TB, name string, opts BackendOptions) *Backend {
 	t.Helper()
+	b := &Backend{t: t, name: name, opts: opts}
+	b.start("127.0.0.1:0")
+	b.Addr = b.listenAddr
+	b.URL = "http://" + b.Addr
+	t.Cleanup(func() { b.stop() })
+	return b
+}
+
+// Restart shuts the backend down, closing every connection to it, and
+// starts a new one with an empty request log on the same address.
+func (b *Backend) Restart() {
+	b.t.Helper()
+	b.stop()
+	b.start(b.Addr)
+}
+
+// start runs a new Server on addr and sets b.stop to shut it down.
+func (b *Backend) start(addr string) {
+	t := b.t
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(t.Output(), nil))
-	if opts.Quiet {
+	if b.opts.Quiet {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	srv, err := testbackend.New(testbackend.Config{
-		Name:     name,
-		Delay:    opts.Delay,
-		FailRate: opts.FailRate,
+		Name:     b.name,
+		Delay:    b.opts.Delay,
+		FailRate: b.opts.FailRate,
 		Logger:   logger,
 		Record:   true,
 	})
 	if err != nil {
-		t.Fatalf("testbackend %s: %v", name, err)
+		t.Fatalf("testbackend %s: %v", b.name, err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		t.Fatalf("testbackend %s: listen: %v", name, err)
+		t.Fatalf("testbackend %s: listen: %v", b.name, err)
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
-
-	t.Cleanup(func() {
+	b.Server = srv
+	b.listenAddr = ln.Addr().String()
+	b.stop = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			t.Errorf("testbackend %s: shutdown: %v", name, err)
+			t.Errorf("testbackend %s: shutdown: %v", b.name, err)
 		}
 		if err := <-errc; err != nil {
-			t.Errorf("testbackend %s: serve: %v", name, err)
+			t.Errorf("testbackend %s: serve: %v", b.name, err)
 		}
-	})
-	addr := ln.Addr().String()
-	return &Backend{Server: srv, Addr: addr, URL: "http://" + addr}
+	}
 }
 
 // NewClient returns an HTTP client with its own transport and a timeout. Its

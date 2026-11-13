@@ -1,0 +1,105 @@
+# Phase 4: proxy throughput by GOMAXPROCS
+date:     2026-11-13T06:57:11Z
+commit:   c2bb3c6
+go:       go1.27.4 linux/amd64
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+pinning:  proxy 0,2,4,6 (first GOMAXPROCS of them), backends 8-15, wrk 16-21
+command:  wrk -t6 -c100 -d15s --latency http://127.0.0.1:18080/ (after a 2 s warm-up)
+proxy:    3 test backends, round-robin, GET / (14-byte body), upstream reuse on
+
+backends alone (three wrk -t2 -c33 at once, same pinning): 217872 req/s
+
+GOMAXPROCS         req/s        p50        p99  speedup    % of backends
+1               12483.49     6.36ms    24.75ms    1.00x               6%
+2               32571.37     2.79ms     8.52ms    2.61x              15%
+4               48432.80     1.77ms     9.83ms    3.88x              22%
+
+## GOMAXPROCS 1
+Running 15s test @ http://127.0.0.1:18080/
+  6 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     8.06ms    4.70ms  52.41ms   85.18%
+    Req/Sec     2.09k   752.42     3.24k    55.78%
+  Latency Distribution
+     50%    6.36ms
+     75%    9.54ms
+     90%   13.94ms
+     99%   24.75ms
+  187389 requests in 15.01s, 26.09MB read
+Requests/sec:  12483.49
+Transfer/sec:      1.74MB
+
+## GOMAXPROCS 2
+Running 15s test @ http://127.0.0.1:18080/
+  6 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     3.01ms    1.68ms  17.53ms   72.46%
+    Req/Sec     5.47k   630.93    11.82k    86.05%
+  Latency Distribution
+     50%    2.79ms
+     75%    3.89ms
+     90%    5.06ms
+     99%    8.52ms
+  491829 requests in 15.10s, 68.48MB read
+Requests/sec:  32571.37
+Transfer/sec:      4.54MB
+
+## GOMAXPROCS 4
+Running 15s test @ http://127.0.0.1:18080/
+  6 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.25ms    2.13ms  52.68ms   90.82%
+    Req/Sec     8.12k   638.44    11.84k    80.00%
+  Latency Distribution
+     50%    1.77ms
+     75%    2.78ms
+     90%    4.21ms
+     99%    9.83ms
+  731344 requests in 15.10s, 101.83MB read
+Requests/sec:  48432.80
+Transfer/sec:      6.74MB
+
+## backends alone
+Running 15s test @ http://127.0.0.1:18001/
+  2 threads and 33 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.39ms    2.25ms  27.13ms   86.17%
+    Req/Sec    35.96k     5.49k   51.34k    66.00%
+  Latency Distribution
+     50%  255.00us
+     75%    1.78ms
+     90%    4.55ms
+     99%    9.91ms
+  1073407 requests in 15.01s, 149.46MB read
+Requests/sec:  71535.91
+Transfer/sec:      9.96MB
+
+Running 15s test @ http://127.0.0.1:18002/
+  2 threads and 33 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.35ms    2.22ms  35.82ms   86.34%
+    Req/Sec    36.83k     5.44k   54.14k    66.33%
+  Latency Distribution
+     50%  254.00us
+     75%    1.69ms
+     90%    4.44ms
+     99%    9.77ms
+  1099366 requests in 15.01s, 153.07MB read
+Requests/sec:  73256.83
+Transfer/sec:     10.20MB
+
+Running 15s test @ http://127.0.0.1:18003/
+  2 threads and 33 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.36ms    2.22ms  38.58ms   86.31%
+    Req/Sec    36.74k     5.58k   52.12k    63.33%
+  Latency Distribution
+     50%  251.00us
+     75%    1.72ms
+     90%    4.44ms
+     99%    9.74ms
+  1096806 requests in 15.01s, 152.72MB read
+Requests/sec:  73078.77
+Transfer/sec:     10.18MB
+

@@ -61,7 +61,9 @@ func okBackend(t *testing.T) *kaBackend {
 // startPooled runs a proxy whose default pool is backend alone and returns
 // a function reporting how many connections that backend has parked.
 // Requests from separate client connections race the previous request's
-// Put, so tests wait on it before the next one.
+// Put, so tests wait on it before the next one. The connection is parked
+// before the access line is written, so a test that reads lines by
+// position waits for the line as well.
 func startPooled(t *testing.T, backend string, mut func(*config.Config)) (string, *logBuf, func() int) {
 	t.Helper()
 	c := parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", backend))
@@ -98,9 +100,10 @@ func expectOK(t *testing.T, addr string) {
 func TestReuseAcrossClients(t *testing.T) {
 	b := okBackend(t)
 	addr, logs, idle := startPooled(t, b.addr, nil)
-	for range 3 {
+	for i := range 3 {
 		expectOK(t, addr)
 		waitParked(t, idle)
+		logs.waitAccess(t, i+1)
 	}
 	if n := b.conns.Load(); n != 1 {
 		t.Fatalf("backend saw %d connections, want 1", n)
@@ -379,6 +382,7 @@ func TestRetryOnStaleConnection(t *testing.T) {
 			addr, logs, idle := startPooled(t, b.addr, nil)
 			expectOK(t, addr)
 			waitParked(t, idle)
+			logs.waitAccess(t, 1)
 			expectOK(t, addr)
 			recs := logs.waitAccess(t, 2)
 			if r := recs[1]; r["retried"] != true || r["reused"] != false || r["status"] != float64(200) {
@@ -431,6 +435,7 @@ func TestNoRetry(t *testing.T) {
 			addr, logs, idle := startPooled(t, b.addr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
 			expectOK(t, addr)
 			waitParked(t, idle)
+			logs.waitAccess(t, 1)
 			if resp, _ := request(t, addr, tc.raw, tc.method); resp.StatusCode != tc.want {
 				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
 			}

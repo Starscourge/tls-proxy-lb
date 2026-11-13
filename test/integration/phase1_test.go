@@ -238,10 +238,13 @@ func countFDs(t *testing.T) int {
 
 // TestGoroutinesAndFDsReturnToBaseline: after 200 concurrent keep-alive
 // clients finish, goroutine and fd counts return to where they started.
+// The upstream connections parked in the pool count until the reaper closes
+// them at the idle timeout, which is short here so the test can wait it
+// out.
 func TestGoroutinesAndFDsReturnToBaseline(t *testing.T) {
 	ForEachScheme(t, func(t *testing.T, scheme string) {
 		b := StartBackend(t, "b1", BackendOptions{})
-		p := StartProxy(t, b.Addr, ProxyOptions{Scheme: scheme, Logger: discard()})
+		p := StartProxy(t, b.Addr, ProxyOptions{Scheme: scheme, Logger: discard(), UpstreamIdle: 300 * time.Millisecond})
 		runtime.GC()
 		baseG, baseFD := runtime.NumGoroutine(), countFDs(t)
 

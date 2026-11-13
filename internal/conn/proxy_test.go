@@ -306,8 +306,10 @@ func TestProxyRequestHeaders(t *testing.T) {
 	if v := req.Header.Get("X-Forwarded-Proto"); v != "http" {
 		t.Errorf("X-Forwarded-Proto = %q", v)
 	}
-	if !req.Close {
-		t.Error("backend not asked to close the upstream connection")
+	// Reuse is on by default: the client's keep-alive and token list are
+	// its own, and the upstream request carries no Connection header.
+	if req.Close {
+		t.Error("backend asked to close a connection the proxy would reuse")
 	}
 	if v := req.Header.Get("X-End-To-End"); v != "kept" {
 		t.Errorf("end-to-end header lost: %q", v)

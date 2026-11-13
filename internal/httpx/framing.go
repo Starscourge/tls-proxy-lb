@@ -23,12 +23,15 @@ func CheckRequest(req *http.Request) (status int, reason string) {
 }
 
 // PrepareRequest rewrites a request read from a client for the upstream:
-// hop-by-hop headers are removed, X-Forwarded-For and X-Forwarded-Proto set,
-// and the connection marked to close after the response.
+// hop-by-hop headers are removed and X-Forwarded-For and X-Forwarded-Proto
+// set. With keepAlive false the request asks the backend to close the
+// connection after the response; with it true the request carries no
+// Connection header, which in HTTP/1.1 means keep-alive, whatever the
+// client asked of its own connection.
 //
 // Host, the request target, the framing (ContentLength, TransferEncoding)
 // and trailers are left as parsed; Request.Write re-serialises them.
-func PrepareRequest(req *http.Request, clientIP, proto string) {
+func PrepareRequest(req *http.Request, clientIP, proto string, keepAlive bool) {
 	RemoveHopByHop(req.Header)
 	SetForwarded(req.Header, clientIP, proto)
 	// Request.Write adds "User-Agent: Go-http-client/1.1" when the header
@@ -36,9 +39,9 @@ func PrepareRequest(req *http.Request, clientIP, proto string) {
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header["User-Agent"] = []string{""}
 	}
-	// One upstream connection per request until Phase 4 adds reuse. Asking
-	// the backend to close makes it the side that holds TIME_WAIT.
-	req.Close = true
+	// Without reuse, asking the backend to close makes it the side that
+	// holds TIME_WAIT.
+	req.Close = !keepAlive
 }
 
 // BodyAllowed reports whether a response to a request with method can carry

@@ -51,7 +51,7 @@ func TestPrepareRequestWire(t *testing.T) {
 		"X-Forwarded-For: 203.0.113.9\r\n"+
 		"X-Forwarded-Proto: https\r\n"+
 		"Content-Length: 5\r\n\r\nhello")
-	PrepareRequest(req, "192.0.2.1", "http")
+	PrepareRequest(req, "192.0.2.1", "http", false)
 	var buf bytes.Buffer
 	if err := req.Write(&buf); err != nil {
 		t.Fatal(err)
@@ -80,9 +80,29 @@ func TestPrepareRequestWire(t *testing.T) {
 	}
 }
 
+// With keep-alive the upstream request has no Connection header, even when
+// the client asked to close its own connection.
+func TestPrepareRequestKeepAlive(t *testing.T) {
+	for _, raw := range []string{
+		"GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+		"GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+		"GET / HTTP/1.0\r\n\r\n",
+	} {
+		req := readReq(t, raw)
+		PrepareRequest(req, "192.0.2.1", "http", true)
+		var buf bytes.Buffer
+		if err := req.Write(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if s := buf.String(); strings.Contains(s, "Connection:") || !strings.Contains(s, " HTTP/1.1\r\n") {
+			t.Errorf("%q forwarded as\n%s", raw, s)
+		}
+	}
+}
+
 func TestPrepareRequestKeepsUserAgent(t *testing.T) {
 	req := readReq(t, "GET / HTTP/1.1\r\nHost: a\r\nUser-Agent: curl/8\r\n\r\n")
-	PrepareRequest(req, "192.0.2.1", "http")
+	PrepareRequest(req, "192.0.2.1", "http", false)
 	var buf bytes.Buffer
 	req.Write(&buf)
 	if !strings.Contains(buf.String(), "User-Agent: curl/8\r\n") {
@@ -93,7 +113,7 @@ func TestPrepareRequestKeepsUserAgent(t *testing.T) {
 func TestPrepareRequestChunkedStaysChunked(t *testing.T) {
 	req := readReq(t, "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTrailer: X-Sum\r\n\r\n"+
 		"5\r\nhello\r\n0\r\nX-Sum: 42\r\n\r\n")
-	PrepareRequest(req, "192.0.2.1", "http")
+	PrepareRequest(req, "192.0.2.1", "http", false)
 	var buf bytes.Buffer
 	if err := req.Write(&buf); err != nil {
 		t.Fatal(err)

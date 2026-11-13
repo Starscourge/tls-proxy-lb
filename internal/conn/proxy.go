@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"syscall"
 	"time"
 
@@ -305,10 +306,10 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	defer b.Release()
 	rec.backend = b.Addr
 
-	httpx.PrepareRequest(req, cc.ip, cc.scheme)
+	httpx.PrepareRequest(req, cc.ip, cc.scheme, b.Conns.Reuse())
 
 	upStart := time.Now()
-	uc, err := upstream.Dial(ctx, b.Addr, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
+	uc, err := b.Conns.Get(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 	var reqBody *httpx.Body
 	if req.Body != nil && req.Body != http.NoBody {
 		// Bytes already sent upstream are flushed before waiting on the
@@ -321,28 +322,26 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		req.Body = reqBody
 	}
 	if err != nil {
-		rec.status = http.StatusBadGateway
-		if isTimeout(err) {
-			rec.status = http.StatusGatewayTimeout
+		cc.dialError(rec, err, head, reqBody != nil)
+		return false
+	}
+	rec.reused = uc.Reused()
+	// The connection goes back to the pool only if the exchange left it
+	// clean; every other path closes it. Deferred before the writer's stop,
+	// so it runs after the writer is joined.
+	reusable := false
+	defer func() {
+		switch {
+		case reusable:
+			b.Conns.Put(uc)
+		default:
+			uc.Close()
 		}
-		rec.err = fmt.Errorf("dial: %w", err)
-		cc.linger = reqBody != nil
-		cc.writeError(rec.status, head)
-		cc.logAccess(rec)
-		return false
-	}
-	defer uc.Close()
-	if err := uc.SetReadDeadline(time.Now().Add(cc.t.UpstreamResponse)); err != nil {
-		rec.status, rec.err = http.StatusBadGateway, err
-		cc.writeError(rec.status, head)
-		cc.logAccess(rec)
-		return false
-	}
+	}()
 
-	w := startWriter(uc, req, reqBody)
-	defer w.stop() // reached on every path; a no-op once joined
-
-	resp, err := cc.readResponse(uc, req)
+	var w *bodyWriter
+	defer func() { w.stop() }() // reached on every path; a no-op once joined
+	resp, err := cc.exchange(uc, req, reqBody, &w)
 	if err != nil {
 		w.stop()
 		cc.responseError(rec, reqBody, w.err, err, head)
@@ -350,6 +349,7 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	}
 	rec.upstream = time.Since(upStart)
 	rec.status = resp.StatusCode
+	upstreamKeepAlive := keepsConnection(resp)
 
 	var respBody *httpx.Body
 	if resp.Body != nil && resp.Body != http.NoBody {
@@ -375,7 +375,10 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		werr = cc.bw.Flush()
 	}
 	// The response is complete or failed; either way the backend gets no
-	// more of the request body.
+	// more of the request body. A writer still running now means the
+	// backend answered before taking the whole body, so the connection is
+	// not reused.
+	writerFinished := w.done()
 	w.stop()
 	if respBody != nil {
 		rec.bytesOut = respBody.N()
@@ -399,8 +402,49 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		keepAlive = false
 		cc.linger = true
 	}
+	// Reuse needs the request sent whole, the response read whole, and a
+	// backend that framed it and did not ask to close.
+	reusable = upstreamKeepAlive && writerFinished && w.err == nil &&
+		(reqBody == nil || reqBody.EOF()) &&
+		(respBody == nil || respBody.EOF())
 	cc.logAccess(rec)
 	return keepAlive
+}
+
+// exchange sends req on uc and reads the response headers. *w is set to
+// the request's writer, which the caller joins.
+func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w **bodyWriter) (*http.Response, error) {
+	if err := uc.SetReadDeadline(time.Now().Add(cc.t.UpstreamResponse)); err != nil {
+		*w = &bodyWriter{}
+		return nil, err
+	}
+	*w = startWriter(uc, req, reqBody)
+	return cc.readResponse(uc, req)
+}
+
+// keepsConnection reports whether the backend's framing of resp lets the
+// connection carry another request: it did not ask to close, and the body
+// has a length or is chunked rather than ending when the connection does.
+// It must be called before PrepareResponse rewrites the framing.
+func keepsConnection(resp *http.Response) bool {
+	if resp.Close {
+		return false
+	}
+	return resp.Body == nil || resp.Body == http.NoBody ||
+		resp.ContentLength >= 0 || slices.Contains(resp.TransferEncoding, "chunked")
+}
+
+// dialError answers a request whose upstream connection could not be
+// opened: 504 if the dial timed out, 502 otherwise.
+func (cc *clientConn) dialError(rec *accessRecord, err error, head, linger bool) {
+	rec.status = http.StatusBadGateway
+	if isTimeout(err) {
+		rec.status = http.StatusGatewayTimeout
+	}
+	rec.err = fmt.Errorf("dial: %w", err)
+	cc.linger = linger
+	cc.writeError(rec.status, head)
+	cc.logAccess(rec)
 }
 
 // misdirected returns why a request for host must not be served on this
@@ -627,7 +671,7 @@ func writeRequest(uc *upstream.Conn, req *http.Request) error {
 // done reports whether the writer has finished. Once it returns true, err
 // and the request body's counters may be read.
 func (w *bodyWriter) done() bool {
-	if w.ch == nil {
+	if w == nil || w.ch == nil {
 		return true
 	}
 	select {

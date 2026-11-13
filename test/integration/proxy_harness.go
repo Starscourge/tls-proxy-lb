@@ -54,6 +54,11 @@ type ProxyOptions struct {
 	Timeouts       config.Timeouts
 	MaxConns       int
 	MaxHeaderBytes int
+	// MaxIdlePerBackend and UpstreamIdle go to the [upstream] table;
+	// NoReuse writes max_idle_per_backend = 0, turning reuse off.
+	MaxIdlePerBackend int
+	UpstreamIdle      time.Duration
+	NoReuse           bool
 	// Logger receives the access log. Nil logs to the test output.
 	Logger *slog.Logger
 }
@@ -88,8 +93,8 @@ func StartProxy(t testing.TB, backend string, opts ProxyOptions) *Proxy {
 
 // StartProxyConfig starts a proxy from a generated config file. body holds
 // the top-level keys, routes and pools; the harness appends a listener on a
-// random localhost port and the [timeouts] and [limits] tables from opts, so
-// body must not contain those. The file goes through config.Load like the
+// random localhost port and the [timeouts], [limits] and [upstream] tables
+// from opts, so body must not contain those. The file goes through config.Load like the
 // real one. The proxy is closed when the test ends.
 //
 // For HTTPS the harness also appends a [tls] table, so body must not
@@ -142,6 +147,17 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	}
 	if opts.MaxHeaderBytes != 0 {
 		fmt.Fprintf(&src, "max_header_bytes = %d\n", opts.MaxHeaderBytes)
+	}
+
+	src.WriteString("\n[upstream]\n")
+	switch {
+	case opts.NoReuse:
+		src.WriteString("max_idle_per_backend = 0\n")
+	case opts.MaxIdlePerBackend != 0:
+		fmt.Fprintf(&src, "max_idle_per_backend = %d\n", opts.MaxIdlePerBackend)
+	}
+	if opts.UpstreamIdle != 0 {
+		fmt.Fprintf(&src, "idle_timeout_ms = %d\n", opts.UpstreamIdle.Milliseconds())
 	}
 
 	path := filepath.Join(dir, "proxy.toml")

@@ -21,7 +21,9 @@ type accessRecord struct {
 	upstream time.Duration
 	bytesIn  int64 // request body bytes read from the client
 	bytesOut int64 // response body bytes read from the backend
-	err      error
+	// reused is set when the response came on a kept-alive connection.
+	reused bool
+	err    error
 }
 
 func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecord {
@@ -30,8 +32,9 @@ func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecor
 
 // logAccess writes the access line: client IP, scheme, method, host, path,
 // status, pool, backend, upstream time, total time, body bytes in each
-// direction, for HTTPS the SNI, TLS version and whether the session was
-// resumed, and the error that ended the request, if any.
+// direction, whether the upstream connection was reused, for HTTPS the SNI,
+// TLS version and whether the session was resumed, and the error that ended
+// the request, if any.
 func (cc *clientConn) logAccess(r *accessRecord) {
 	attrs := []slog.Attr{
 		slog.String("client", cc.ip),
@@ -46,6 +49,7 @@ func (cc *clientConn) logAccess(r *accessRecord) {
 		slog.Float64("total_ms", ms(time.Since(r.start))),
 		slog.Int64("bytes_in", r.bytesIn),
 		slog.Int64("bytes_out", r.bytesOut),
+		slog.Bool("reused", r.reused),
 	}
 	if cc.scheme == "https" {
 		attrs = append(attrs,

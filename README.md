@@ -8,12 +8,14 @@ it uses only the parsers and serialisers (`ReadRequest`, `ReadResponse`,
 `Request.Write`, `Response.Write`, `Header`). `http.Server`, `http.Transport`,
 `http.Client` and `httputil.ReverseProxy` are not used on the request path.
 
-**Status:** Phase 4 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
+**Status:** Phase 5 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
 certificate and the pool on one port; round-robin, least-connections or
 consistent hashing across each pool, from a TOML config file; upstream
-connections kept alive and reused through the proxy's own pool; pprof on a
-loopback admin listener). Health checks, retries across backends and
-metrics arrive in Phase 5.
+connections kept alive and reused through the proxy's own pool; active and
+passive health checks that eject failing backends and re-admit them;
+retries on another backend; Prometheus `/metrics`, a JSON `/status` and
+pprof on a loopback admin listener). Per-client rate limiting arrives in
+Phase 6.
 
 ## Layout
 
@@ -21,7 +23,8 @@ metrics arrive in Phase 5.
 cmd/proxy/         the proxy
 cmd/testbackend/   test backend for tests and the lab
 internal/          proxy packages (conn, httpx, tlsx, lb, upstream, health,
-                   ratelimit, config, admin, logbuf) and the test backend library
+                   metrics, ratelimit, config, admin, logbuf) and the test
+                   backend library
 test/integration/  end-to-end tests and their helpers
 bench/             benchmark and demo scripts, raw results
 lab/               Docker Compose lab, certificate script
@@ -44,7 +47,8 @@ make check-config       # validate lab/proxy.toml (or CONFIG=path), like nginx -
 make bench-lb           # balancer benchmarks; fails if a pick allocates
 make testssl            # testssl.sh against the lab proxy; report in docs/testssl-phase3.txt
 make lab-up             # proxy, three backends and a load generator in Docker
-make lab-check          # bring the lab up and check backends, proxy routes and netem
+make lab-check          # bring the lab up and check backends, proxy routes, Prometheus and netem
+make prom-check         # Prometheus in the lab scrapes the proxy's /metrics (lab must be up)
 make lab-down
 bench/phase1/wrk-race.sh   # wrk -c 200 -d 30s against a -race proxy build
 make bench-allocs       # allocations per request (bench/phase4/results/allocs-*.txt)
@@ -52,6 +56,8 @@ make bench-reuse        # wrk with upstream reuse off and on, new connections pe
 make wrk-race-reuse     # wrk GET and POST /echo against a -race build, reuse on
 make bench-scaling      # throughput at GOMAXPROCS 1, 2 and 4
 make bench-profile      # mutex, block and CPU profiles under load
+make bench-kill         # kill -9 one of three backends under wrk (-race build), then restart it
+make bench-stop         # SIGSTOP one of three backends under wrk (-race build), then SIGCONT
 ```
 
 ## Running the proxy
@@ -139,9 +145,19 @@ max_header_bytes = 65536
 [upstream]                      # optional; defaults shown
 max_idle_per_backend = 100      # idle keep-alive connections per backend address; 0 = no reuse
 idle_timeout_ms      = 30000    # idle connections older than this are closed
+max_retries          = 1        # other backends a failed request may go to, 0 to 2
+
+[health]                        # optional; defaults shown; applies to every backend address
+path             = "/healthz"   # active checks: GET this; 2xx or 3xx is a success
+interval_ms      = 2000         # between checks of one backend; 0 turns active checks off
+timeout_ms       = 1000         # per check; at most interval_ms
+rise             = 2            # successes in a row to become healthy
+fall             = 3            # failures in a row to become unhealthy
+passive_failures = 3            # failures in a row in live traffic that eject; 0 = off
+eject_ms         = 10000        # an ejected backend stays out at least this long
 
 [admin]                         # optional; no admin listener without it
-address                = "127.0.0.1:9090"  # loopback only; serves /debug/pprof/
+address                = "127.0.0.1:9090"  # loopback only; /metrics, /status, /debug/pprof/
 mutex_profile_fraction = 0      # >0 turns the mutex profile on (runtime.SetMutexProfileFraction)
 block_profile_rate_ns  = 0      # >0 turns the block profile on (runtime.SetBlockProfileRate)
 
@@ -173,17 +189,37 @@ idempotent or was never sent. The access log reports `reused` (and
 upstream connections to about zero after warm-up
 (`bench/phase4/results/`).
 
+Health: each backend address is checked with `GET /healthz` every
+`interval_ms` and leaves rotation after `fall` failures in a row, returning
+after `rise` successes. Live traffic ejects it sooner: `passive_failures`
+dial failures, timeouts, resets or 5xx responses in a row take it out at
+once, for at least `eject_ms`, after which active checks decide. With no
+healthy backend the proxy answers 503 without dialling. A request that
+fails before any response byte reaches the client goes to another backend:
+after a failed dial for any method, after a later failure only for GET,
+HEAD, OPTIONS or TRACE without a body; the access log reports `retries`.
+`kill -9` on one of three backends under wrk fails no requests, and the
+backend is out of rotation within milliseconds; a SIGSTOPped one is out
+after one response timeout (`bench/phase5/results/`).
+
+Admin listener: `/metrics` (Prometheus: requests by pool, backend and
+status, latency histogram by pool, in-flight requests, upstream dials and
+reuses, backend health and transitions, retries by reason, client
+connections, Go runtime), `/status` (JSON: pools and backends with their
+health, last check and connection counts) and `/debug/pprof/`.
+
 ## Test backend
 
 ```sh
-go run ./cmd/testbackend -port 8000 -name b1 -delay-ms 0 -fail-rate 0
+go run ./cmd/testbackend -port 8000 -name b1 -delay-ms 0 -fail-rate 0 [-healthz-fail]
 ```
 
 Every response carries `X-Backend: <name>`. Endpoints: `/` (catch-all),
 `/healthz`, `/echo` (streams the request body back), `/slow?ms=N`
 (default 5000), `/bytes?n=N[&chunked=1]` (N bytes of a fixed pattern) and
 `/stats` (connections accepted and open, and requests served, as JSON).
-`-delay-ms` and `-fail-rate` apply to every endpoint except `/stats`.
+`-delay-ms` and `-fail-rate` apply to every endpoint except `/stats`;
+`-healthz-fail` makes `/healthz` alone answer 500.
 Each request other than `/stats` is logged as one JSON line.
 
 ## Lab
@@ -194,7 +230,9 @@ pool with the `default.test` certificate, `a.test` on least-connections
 and `b.test` on consistent hashing by `X-User-Id`, each with its own
 certificate), `backend1`–`backend3` (`10.0.0.11`–`.13`, port 8000) and a
 load generator with curl, wrk and k6 (`10.0.0.20`, the lab CA at
-`/work/ca.crt`) on one network. `make lab-up` creates the certificates if
+`/work/ca.crt`) on one network. Prometheus runs in the proxy container's
+network namespace, scrapes its loopback admin listener every 2 s, and
+serves its UI on `10.0.0.10:9090` inside the lab network. `make lab-up` creates the certificates if
 needed and runs the proxy container as you, so it can read the keys in
 `lab/certs`. Backends have `NET_ADMIN`, so traffic shaping works inside
 them:

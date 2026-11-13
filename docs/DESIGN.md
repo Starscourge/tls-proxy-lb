@@ -971,3 +971,254 @@ On the development machine (WSL2, Core Ultra 7 155H):
   and 24 to 15 KB.
 - `-race` wrk, GET and POST `/echo` at once for 30 s: no races, no
   non-200 responses, fds back to baseline after reaping.
+
+## Phase 5: Health checks, retries and metrics
+
+### Health belongs to the address
+
+`health.Checker` keeps one `Target` per backend address, and every
+`lb.Backend` with that address shares it, as it shares the address's
+upstream pool. A server that is down is down for every pool that lists
+it, and per-pool probers would check the same server once per pool (three
+times per interval in the lab). This reverses the Phase 2 note that health
+would follow the per-pool rule; in-flight counters and request counts stay
+per pool, as before. The cost: one `[health]` table for the whole proxy, so
+two pools cannot check the same address with different paths or
+thresholds. Per-pool settings would bring back per-pool targets.
+
+### Three states, one writer each
+
+A target is `Healthy`, `Unhealthy` (active checks failed `fall` times in a
+row) or `Ejected` (live traffic failed `passive_failures` times in a row).
+The state is an `atomic.Int32` read by every pick.
+
+The target's prober goroutine makes every change except one: the move into
+`Ejected` is a compare-and-swap from `Healthy` made by the request
+goroutine whose failure completed the run. It then wakes the prober
+without blocking (a channel with room for one), and the prober starts the
+backoff, records the time for `/status` and closes the address's idle
+connections. So a failing backend leaves rotation within microseconds of
+the failure that decides it, not at the prober's next turn. In the kill
+test it was out of rotation 2.5 ms after `kill -9`. The prober's own
+moves use compare-and-swap too, so an ejection that races a check result
+wins and the result is dropped.
+
+When the backoff (`eject_ms`) ends the target becomes `Unhealthy`, not
+`Healthy`: active checks decide when it returns, after `rise` successes.
+A backend that is still broken stays out without first taking another
+round of failed requests. With active checks off there is nothing to
+decide, so it goes straight back to `Healthy`, as nginx's
+`max_fails`/`fail_timeout` does. The backoff is fixed. An exponential one
+would treat a backend that keeps failing more gently, but active checks
+already keep such a backend out, and one fixed number is easier to reason
+about in the Phase 9 demos.
+
+Every state change bumps the checker's generation counter, which is what
+pools watch (below).
+
+### Hysteresis: a run must be unbroken
+
+`health.Machine` counts the current run of successes or failures; a result
+of the other kind resets it. A healthy backend becomes unhealthy after
+`fall` failures in a row, an unhealthy one healthy after `rise` successes
+in a row. Results that alternate, or runs one short of a threshold, never
+move the verdict, which the table-driven test checks with scripted
+sequences. The rejected alternative, failures counted over a sliding
+window, ejects a backend that fails one check in three; with runs that
+backend stays in, and passive checks catch it if its traffic fails too.
+
+Backends start healthy and are checked at once. Starting unhealthy would
+answer 503 for `rise` intervals after every start. A backend that is dead
+at startup costs a few requests until passive checks or the first `fall`
+checks catch it, and those requests are retried. Later checks are spread
+by ±10% jitter, so probers started together do not stay in step.
+
+### Active checks
+
+Each check is `GET <path>` through an `http.Client` (allowed off the
+request path) with keep-alive off, bounded by `timeout_ms`. Each check
+opens its own connection, so it tests the dial and accept path a new
+client would take. This is what makes a SIGSTOPped backend fail its
+checks: the kernel still completes the TCP handshake, and the request
+times out. A kept-alive probe connection would also time out, but would
+not notice a full accept queue. 2xx and 3xx are successes, and redirects
+are not followed. The config rejects `timeout_ms` above `interval_ms`:
+checks of one backend run one after another, and a longer timeout would
+quietly stretch the interval. `interval_ms = 0` turns active checks off.
+
+### Passive checks
+
+These count as a failure in live traffic: a failed dial, a timeout or
+reset or close before the response headers, a malformed response, a 5xx
+response, and a response body that breaks off on the backend's side. Any
+other response is a success and ends the run. These do not count: client
+failures (a body that stalls or breaks off, a client that leaves while a
+1xx is relayed), and failures while the server is closing, which the
+proxy causes.
+
+Counting 5xx follows the plan. The trade-off is that one endpoint
+returning 500 on every call could eject a backend whose other endpoints
+work. That takes `passive_failures` 5xx in a row with no success in
+between, and active checks bring the backend back once the backoff ends.
+
+The run counter is an atomic, so under concurrency "in a row" is
+approximate: a success landing between two failures from other
+connections resets it. That errs towards keeping a backend in. A success
+loads the counter before storing zero, so busy healthy backends write
+nothing and the cache line is not bounced between cores.
+
+### Pools pick from a cached healthy set
+
+`Balancer.Pick` has taken the healthy set since Phase 2. Each `lb.Pool`
+keeps its healthy backends with the generation they were built at, behind
+an `atomic.Pointer`. A pick loads the checker's generation and returns the
+cached slice when it matches, so between health changes a pick costs two
+atomic loads and allocates nothing (tested for every algorithm). After a
+change, the first pick rebuilds the slice. The generation is read before
+the states, so a slice is never kept that is older than its generation
+says. With every backend healthy the pool's own slice is returned. The
+ring already skips backends outside the healthy set, so only an ejected
+backend's keys move.
+
+### Retries on another backend
+
+A request goes to another healthy backend it has not tried, up to
+`upstream.max_retries` (default 1, at most 2), only if no byte of a
+response has reached the client and:
+
+| Failure | Retried |
+| --- | --- |
+| Dial refused or timed out | Any method, body or not: nothing was sent and no body byte read from the client |
+| Reset, close, timeout or malformed response before the headers | Only GET, HEAD, OPTIONS, TRACE without a body |
+| A response, any status, 5xx included | Never; it is an answer, and it is relayed |
+| A 1xx already relayed | Never: the client is reading this backend's answer |
+| Client failures, server closing | Never |
+
+POST is never retried after its bytes may have reached a backend, because
+the backend may have acted on it before failing. A body streams from the
+client as it is sent, so a request with a body can be retried only before
+its first byte is read, which means only after a failed dial.
+
+Timeouts are retried, so a GET to a SIGSTOPped backend takes up to
+`upstream_response_ms` and then succeeds elsewhere, instead of failing.
+That is nginx's default (`proxy_next_upstream error timeout`). The
+trade-off is up to twice the timeout for that request, against an error.
+5xx responses are not retried. Retrying them would multiply load on a
+pool that is failing because it is overloaded.
+
+The Phase 4 retry (a stale kept-alive connection, retried on a new
+connection to the same backend) stays separate and does not count against
+`max_retries`, because it says nothing about the backend's health.
+
+What bounds a retry storm is the low cap and ejection: once a backend is
+out, its requests stop failing, so they stop being retried. A retry
+budget (retries capped as a fraction of requests) is the plan's stretch
+goal. `proxy_retries_total` shows the retry rate by reason.
+
+When no backend is healthy the proxy answers 503 at once and dials
+nothing. The rejected alternative is Envoy's panic mode, which balances
+across every backend when too few are healthy. It helps when health
+checks are wrong, at the cost of sending traffic to backends that are
+known to be dead.
+
+### Metrics: atomics on the request path, one collector at scrape time
+
+The request path never asks the Prometheus client for a labelled child
+(`WithLabelValues` hashes the labels and takes a read lock). Each request
+already holds its pool and backend, so the counts are plain atomics on
+`metrics.PoolStats` and `metrics.BackendStats`. One unchecked collector
+reads them, the upstream pools' dial and reuse counters, and the health
+targets at scrape time. The latency histogram is the one Prometheus type
+on the hot path. Each pool's child is resolved once per snapshot, and
+`Observe` is lock-free. Status codes are counted exactly, not by class,
+in a fixed array per backend (100–599, plus "other"). 502, 503 and 504
+mean different things here, and the array costs 4 KB per backend.
+Requests that reach no pool are counted with empty pool and backend
+labels; requests answered without a backend (503 when none is healthy)
+with an empty backend.
+
+Stats live in `metrics.Metrics`, keyed by pool name and address, not in
+the snapshot, so a snapshot rebuilt by Phase 7's reload gets the same
+counters and they never go backwards. The in-flight counter that
+least-connections reads moved into `BackendStats` for the same reason.
+`BenchmarkProxy`, now wired like the binary, allocates 35 times per GET
+and 42 per POST with reuse, the same as Phase 4. Wiring it this way first
+showed 36 and 43: an `errors.As` target escaping to the heap on the
+success path, now reached only on errors.
+
+Metrics: `proxy_requests_total{pool,backend,code}`,
+`proxy_request_duration_seconds{pool}`,
+`proxy_requests_in_flight{pool,backend}`,
+`proxy_upstream_connections_total{backend,kind=dial|reuse}`,
+`proxy_upstream_idle_connections{backend}`,
+`proxy_backend_healthy{backend}`, `proxy_backend_state{backend,state}`,
+`proxy_backend_transitions_total{backend,to}`,
+`proxy_retries_total{pool,reason=stale_conn|dial|error|timeout}`,
+`proxy_client_connections`, and the Go and process collectors
+(`go_goroutines` is the goroutine count). The redirect listener's 308s
+are not counted, because they never reach a pool.
+
+The Go test reads the text exposition rather than importing
+`prometheus/client_model`, which would have made that module a direct
+dependency. It is still in `go.mod`, as an indirect dependency of
+`client_golang`.
+
+### Admin: /metrics, /status, and Prometheus in the proxy's namespace
+
+The admin listener adds `/metrics` and `/status` (JSON: each pool with its
+algorithm, healthy count and each backend's state and in-flight count;
+each address once with its health, the current runs, the last check,
+transitions by state, and its idle, dialled and reused connections). It
+still binds only loopback, because pprof exposes memory. In the lab,
+Prometheus runs with `network_mode: service:proxy`, so it shares the
+proxy container's network namespace and scrapes `127.0.0.1:9901`. The
+rejected alternative was a second, public listener serving only
+`/metrics`: more config, and a second port to secure.
+
+### Test backend: /healthz can fail on its own
+
+Phase 0 made `-fail-rate` apply to `/healthz` too and said a separate
+switch would come if Phase 5 needed one. It did: "accepts TCP but answers
+500 on /healthz" must be caught by active checks alone, while traffic
+still works. `HealthzFail` / `-healthz-fail` / `SetHealthy` make `/healthz`
+answer 500 and leave every other endpoint alone.
+
+### Tests
+
+- `internal/health`: the flapping table and the state machine. Against
+  httptest backends: fall and rise, refused, timeout, 3xx, passive
+  ejection with active re-admission and without active checks, and a run
+  broken by a success. `Sync` removing an address stops its prober, which
+  goleak checks against a baseline that includes the other probers.
+- `internal/lb`: healthy-set changes, the ring skipping an ejected node
+  without moving other keys, exclusion on retry, zero allocations.
+- `internal/conn`: every row of the retry table, the retry limit, 503
+  without a dial, passive ejection from 5xx and from dial failures, client
+  stalls not counting, request counts.
+- `test/integration` runs backends as real processes (`ProcBackend`), so
+  `kill -9` and SIGSTOP are the real thing: the kernel resets or silences
+  the sockets. The harness turns health checks off unless a test asks for
+  them, so earlier tests see no probe requests and no ejections.
+- `bench/phase5/failover.sh kill|stop`: wrk against a `-race` build with
+  `kill -9` or SIGSTOP on one of three backends, then a restart or
+  SIGCONT. Ejection and re-admission are timed from `/metrics`, and
+  failures are split by phase from the access log.
+- `lab/prometheus-check.sh`, run by `check-lab.sh` and CI: the scrape
+  target is up, three backends report healthy, and requests through the
+  proxy show up in `proxy_requests_total`.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H):
+
+- `kill -9` under wrk (32 connections, `-race` build): b2 was out of
+  rotation within 30 ms. Polling `/metrics` every 10 ms is the resolution;
+  the in-process test measures 2.5 ms. 0 requests failed during detection
+  and 0 after ejection, of 256k: 16 requests were retried after failed
+  dials and 8 on new connections. After the restart, b2 was back in
+  rotation 613 ms later (`rise` 2 at a 500 ms interval).
+- SIGSTOP: ejected after 1.03 s (the 1 s upstream response timeout, then
+  passive ejection), 0 failed requests, 32 retried after timeouts (one in
+  flight per connection). p99 was 741 ms, from the requests that waited
+  out the timeout. Back in rotation 534 ms after SIGCONT.
+- Allocations per request: unchanged (above).

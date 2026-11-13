@@ -38,6 +38,7 @@ type Conn struct {
 
 	dw     httpx.DeadlineWriter
 	cr     countingReader
+	cw     countingWriter
 	reused bool
 	// idleSince is when the connection was parked, set by Put.
 	idleSince time.Time
@@ -54,7 +55,8 @@ func Dial(ctx context.Context, addr string, connectTimeout, ioTimeout time.Durat
 	c.dw = httpx.DeadlineWriter{Conn: nc, Timeout: ioTimeout, ExtendRead: true}
 	c.cr.r = nc
 	c.R = bufio.NewReaderSize(&c.cr, readBufferSize)
-	c.W = bufio.NewWriterSize(&c.dw, writeBufferSize)
+	c.cw.w = &c.dw
+	c.W = bufio.NewWriterSize(&c.cw, writeBufferSize)
 	return c, nil
 }
 
@@ -65,6 +67,23 @@ func (c *Conn) Reused() bool { return c.reused }
 // the connection was dialled or last taken from a pool. Zero after a failed
 // request means the backend sent nothing at all in reply.
 func (c *Conn) BytesRead() int64 { return c.cr.n }
+
+// BytesWritten returns how many bytes have been written to the socket since
+// the connection was dialled or last taken from a pool. Zero after a failed
+// write means no part of the request left the proxy.
+func (c *Conn) BytesWritten() int64 { return c.cw.n }
+
+// countingWriter counts the bytes written through it.
+type countingWriter struct {
+	w *httpx.DeadlineWriter
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
 
 // countingReader counts the bytes read through it.
 type countingReader struct {

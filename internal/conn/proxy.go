@@ -332,6 +332,7 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	reusable := false
 	defer func() {
 		switch {
+		case uc == nil: // the retry's dial failed
 		case reusable:
 			b.Conns.Put(uc)
 		default:
@@ -342,6 +343,19 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	var w *bodyWriter
 	defer func() { w.stop() }() // reached on every path; a no-op once joined
 	resp, err := cc.exchange(uc, req, reqBody, &w)
+	if err != nil && retryable(uc, req, reqBody, w, err) {
+		// The backend closed a kept-alive connection as the request went
+		// out, and sent nothing back. Once more, on a new connection.
+		uc.Close()
+		rec.retried = true
+		uc, err = b.Conns.Dial(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
+		if err != nil {
+			cc.dialError(rec, err, head, false)
+			return false
+		}
+		rec.reused = false
+		resp, err = cc.exchange(uc, req, reqBody, &w)
+	}
 	if err != nil {
 		w.stop()
 		cc.responseError(rec, reqBody, w.err, err, head)
@@ -420,6 +434,57 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 	}
 	*w = startWriter(uc, req, reqBody)
 	return cc.readResponse(uc, req)
+}
+
+// retryable reports whether a request that failed on uc may be sent again
+// on a new connection. All of these must hold:
+//
+//   - uc was reused: a backend may close an idle keep-alive connection at
+//     any moment, and a request sent just as it does finds the connection
+//     dead. A new connection failing is a real failure.
+//   - Not a byte of response arrived. Once one has, the backend has acted
+//     on the request, and a 1xx may already have reached the client.
+//   - The failure is the connection closing or resetting, not a timeout,
+//     which means a slow backend rather than a stale connection.
+//   - The request has no body. A body streams from the client as it is
+//     sent, so what has gone cannot be sent again.
+//   - Either nothing was written, so the backend cannot have seen the
+//     request, or the method is idempotent, so seeing it twice is harmless.
+//     A POST whose bytes left before the connection died may have been
+//     processed by a backend that crashed before answering.
+//
+// The writer must be joined; a request without a body is written inline,
+// so it always is.
+func retryable(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w *bodyWriter, err error) bool {
+	if !uc.Reused() || reqBody != nil || !w.done() || uc.BytesRead() != 0 {
+		return false
+	}
+	if w.err != nil {
+		err = w.err
+	}
+	if isTimeout(err) || !isConnClosed(err) {
+		return false
+	}
+	return uc.BytesWritten() == 0 || idempotent(req.Method)
+}
+
+// isConnClosed reports whether err means the peer closed or reset the
+// connection.
+func isConnClosed(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+}
+
+// idempotent reports whether method is idempotent and safe to repeat
+// (RFC 9110 section 9.2.2). PUT and DELETE are idempotent too, but a
+// retried request here has no body, and those are rare enough without
+// one that the narrower list costs nothing.
+func idempotent(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	}
+	return false
 }
 
 // keepsConnection reports whether the backend's framing of resp lets the

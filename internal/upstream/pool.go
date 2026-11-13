@@ -65,7 +65,7 @@ func (p *Pool) Get(ctx context.Context, connectTimeout, ioTimeout time.Duration)
 			continue
 		}
 		c.reused = true
-		c.cr.n = 0
+		c.cr.n, c.cw.n = 0, 0
 		c.dw.Timeout = ioTimeout
 		return c, nil
 	}

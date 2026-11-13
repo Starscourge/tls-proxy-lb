@@ -219,7 +219,7 @@ func TestReuseSkipsConnectionClosedWhileIdle(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 	recs := logs.waitAccess(t, 2)
-	if recs[1]["reused"] != false {
+	if recs[1]["reused"] != false || recs[1]["retried"] != nil {
 		t.Fatalf("second request: %v", recs[1])
 	}
 }
@@ -312,7 +312,7 @@ func TestNoReuse(t *testing.T) {
 			if n := b.conns.Load(); n != 2 {
 				t.Fatalf("backend saw %d connections, want 2", n)
 			}
-			if r := logs.waitAccess(t, 2)[1]; r["reused"] != false {
+			if r := logs.waitAccess(t, 2)[1]; r["reused"] != false || r["retried"] != nil {
 				t.Fatalf("second request reused: %v", r)
 			}
 		})
@@ -325,4 +325,98 @@ func getOK(t *testing.T, addr string) { expectOK(t, addr) }
 // has parked.
 func idleConns(snap *config.Snapshot) int {
 	return snap.Route("any").Backends[0].Conns.Idle()
+}
+
+// The backend reads the second request on a kept-alive connection and
+// closes without a reply: its idle timeout fired just as the request
+// arrived. The liveness check on Get cannot see that coming; the retry
+// must cover it.
+func TestRetryOnStaleConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(c net.Conn)
+	}{
+		{"FIN", func(c net.Conn) { c.Close() }},
+		{"reset", func(c net.Conn) { c.(*net.TCPConn).SetLinger(0); c.Close() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newKABackend(t, func(i int, c net.Conn, br *bufio.Reader) {
+				if i > 0 {
+					serveAll(c, br, func(*http.Request) string { return okReply })
+					return
+				}
+				n := 0
+				serveAll(c, br, func(*http.Request) string {
+					n++
+					if n == 2 {
+						tc.close(c)
+						return ""
+					}
+					return okReply
+				})
+			})
+			addr, _, logs := startProxy(t, b.addr, nil)
+			expectOK(t, addr)
+			expectOK(t, addr)
+			recs := logs.waitAccess(t, 2)
+			if r := recs[1]; r["retried"] != true || r["reused"] != false || r["status"] != float64(200) {
+				t.Fatalf("second request: %v", r)
+			}
+			if n := b.conns.Load(); n != 2 {
+				t.Fatalf("backend saw %d connections, want 2", n)
+			}
+		})
+	}
+}
+
+// No retry when the failure might not be a stale connection, or when
+// sending the request again might repeat its effect.
+func TestNoRetry(t *testing.T) {
+	cases := []struct {
+		name string
+		// second handles the second request on the first connection.
+		second func(c net.Conn)
+		raw    string
+		method string
+		want   int
+	}{
+		{"POST already sent", func(c net.Conn) { c.Close() },
+			"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n", "POST", 502},
+		{"request with a body", func(c net.Conn) { c.Close() },
+			"PUT / HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\n\r\nhi", "PUT", 502},
+		{"response bytes arrived", func(c net.Conn) { io.WriteString(c, "HTTP/1.1 2"); c.Close() },
+			get("a"), "GET", 502},
+		{"timeout", func(c net.Conn) { time.Sleep(time.Second) },
+			get("a"), "GET", 504},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newKABackend(t, func(i int, c net.Conn, br *bufio.Reader) {
+				if i > 0 {
+					serveAll(c, br, func(*http.Request) string { return okReply })
+					return
+				}
+				n := 0
+				serveAll(c, br, func(*http.Request) string {
+					n++
+					if n == 2 {
+						tc.second(c)
+						return ""
+					}
+					return okReply
+				})
+			})
+			addr, _, logs := startProxy(t, b.addr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
+			expectOK(t, addr)
+			if resp, _ := request(t, addr, tc.raw, tc.method); resp.StatusCode != tc.want {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
+			}
+			if r := logs.waitAccess(t, 2)[1]; r["retried"] != nil || r["reused"] != true {
+				t.Fatalf("second request: %v", r)
+			}
+			if n := b.conns.Load(); n != 1 {
+				t.Fatalf("backend saw %d connections, want 1", n)
+			}
+		})
+	}
 }

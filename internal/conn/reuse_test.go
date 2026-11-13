@@ -58,6 +58,26 @@ func okBackend(t *testing.T) *kaBackend {
 	})
 }
 
+// startPooled runs a proxy whose default pool is backend alone and returns
+// a function reporting how many connections that backend has parked.
+// Requests from separate client connections race the previous request's
+// Put, so tests wait on it before the next one.
+func startPooled(t *testing.T, backend string, mut func(*config.Config)) (string, *logBuf, func() int) {
+	t.Helper()
+	c := parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", backend))
+	if mut != nil {
+		mut(c)
+	}
+	snap := newSnapshot(t, c)
+	addr, _, logs := startProxySnapshot(t, snap)
+	return addr, logs, func() int { return idleConns(snap) }
+}
+
+func waitParked(t *testing.T, idle func() int) {
+	t.Helper()
+	waitFor(t, "the upstream connection parked", func() bool { return idle() == 1 })
+}
+
 // request sends raw on a new client connection and returns the response.
 func request(t *testing.T, addr, raw, method string) (*http.Response, []byte) {
 	t.Helper()
@@ -77,15 +97,14 @@ func expectOK(t *testing.T, addr string) {
 // connection, and the access log says so.
 func TestReuseAcrossClients(t *testing.T) {
 	b := okBackend(t)
-	snap := newSnapshot(t, parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", b.addr)))
-	addr, _, logs := startProxySnapshot(t, snap)
+	addr, logs, idle := startPooled(t, b.addr, nil)
 	for range 3 {
 		expectOK(t, addr)
+		waitParked(t, idle)
 	}
 	if n := b.conns.Load(); n != 1 {
 		t.Fatalf("backend saw %d connections, want 1", n)
 	}
-	waitFor(t, "the connection parked", func() bool { return idleConns(snap) == 1 })
 	recs := logs.waitAccess(t, 3)
 	for i, r := range recs {
 		if r["reused"] != (i > 0) {
@@ -128,7 +147,7 @@ func TestReuseFraming(t *testing.T) {
 // A POST whose body the backend read whole leaves the connection reusable.
 func TestReuseAfterRequestBody(t *testing.T) {
 	b := okBackend(t)
-	addr, _, _ := startProxy(t, b.addr, nil)
+	addr, _, idle := startPooled(t, b.addr, nil)
 	for _, raw := range []string{
 		"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello",
 		"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
@@ -136,6 +155,7 @@ func TestReuseAfterRequestBody(t *testing.T) {
 		if resp, _ := request(t, addr, raw, "POST"); resp.StatusCode != 200 {
 			t.Fatalf("status %d", resp.StatusCode)
 		}
+		waitParked(t, idle)
 	}
 	expectOK(t, addr)
 	if c := b.conns.Load(); c != 1 {
@@ -186,11 +206,13 @@ backends = [{ address = %q }]
 algorithm = "least_conn"
 backends = [{ address = %q }]
 `, b.addr, b.addr))
-	addr, _, _ := startProxySnapshot(t, newSnapshot(t, c))
+	snap := newSnapshot(t, c)
+	addr, _, _ := startProxySnapshot(t, snap)
 	for _, host := range []string{"a.test", "b.test", "a.test"} {
 		if resp, _ := request(t, addr, get(host), "GET"); resp.StatusCode != 200 {
 			t.Fatalf("%s: status %d", host, resp.StatusCode)
 		}
+		waitParked(t, func() int { return snap.Pool("p").Backends[0].Conns.Idle() })
 	}
 	if n := b.conns.Load(); n != 1 {
 		t.Fatalf("backend saw %d connections, want 1", n)
@@ -298,14 +320,13 @@ func TestNoReuse(t *testing.T) {
 				}
 				serveAll(c, br, func(*http.Request) string { return okReply })
 			})
-			snap := newSnapshot(t, parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", b.addr)))
-			addr, _, logs := startProxySnapshot(t, snap)
+			addr, logs, idle := startPooled(t, b.addr, nil)
 			tc.client(t, addr)
 			logs.waitAccess(t, 1)
 			// The liveness check and the retry would hide a connection
 			// parked by mistake, so look at the pool itself.
 			time.Sleep(20 * time.Millisecond)
-			if n := idleConns(snap); n != 0 {
+			if n := idle(); n != 0 {
 				t.Fatalf("%d connections parked after the exchange", n)
 			}
 			expectOK(t, addr)
@@ -355,8 +376,9 @@ func TestRetryOnStaleConnection(t *testing.T) {
 					return okReply
 				})
 			})
-			addr, _, logs := startProxy(t, b.addr, nil)
+			addr, logs, idle := startPooled(t, b.addr, nil)
 			expectOK(t, addr)
+			waitParked(t, idle)
 			expectOK(t, addr)
 			recs := logs.waitAccess(t, 2)
 			if r := recs[1]; r["retried"] != true || r["reused"] != false || r["status"] != float64(200) {
@@ -406,8 +428,9 @@ func TestNoRetry(t *testing.T) {
 					return okReply
 				})
 			})
-			addr, _, logs := startProxy(t, b.addr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
+			addr, logs, idle := startPooled(t, b.addr, func(c *config.Config) { c.Timeouts.UpstreamResponse = 300 * time.Millisecond })
 			expectOK(t, addr)
+			waitParked(t, idle)
 			if resp, _ := request(t, addr, tc.raw, tc.method); resp.StatusCode != tc.want {
 				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
 			}

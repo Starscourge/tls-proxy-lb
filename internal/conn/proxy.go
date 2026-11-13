@@ -326,16 +326,11 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		return false
 	}
 	rec.reused = uc.Reused()
-	// The connection goes back to the pool only if the exchange left it
-	// clean; every other path closes it. Deferred before the writer's stop,
-	// so it runs after the writer is joined.
-	reusable := false
+	// Every path that does not park the connection closes it. Deferred
+	// before the writer's stop, so it runs after the writer is joined. uc
+	// is nil once parked, or if the retry's dial failed.
 	defer func() {
-		switch {
-		case uc == nil: // the retry's dial failed
-		case reusable:
-			b.Conns.Put(uc)
-		default:
+		if uc != nil {
 			uc.Close()
 		}
 	}()
@@ -417,10 +412,14 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		cc.linger = true
 	}
 	// Reuse needs the request sent whole, the response read whole, and a
-	// backend that framed it and did not ask to close.
-	reusable = upstreamKeepAlive && writerFinished && w.err == nil &&
+	// backend that framed it and did not ask to close. The connection is
+	// parked before logging, so the next request can have it at once.
+	if upstreamKeepAlive && writerFinished && w.err == nil &&
 		(reqBody == nil || reqBody.EOF()) &&
-		(respBody == nil || respBody.EOF())
+		(respBody == nil || respBody.EOF()) {
+		b.Conns.Put(uc)
+		uc = nil
+	}
 	cc.logAccess(rec)
 	return keepAlive
 }

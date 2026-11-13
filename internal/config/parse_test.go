@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 )
 
@@ -75,6 +76,16 @@ max_header_bytes = 8192
 [upstream]
 max_idle_per_backend = 16
 idle_timeout_ms      = 9000
+max_retries          = 2
+
+[health]
+path             = "/ready?deep=1"
+interval_ms      = 500
+timeout_ms       = 250
+rise             = 4
+fall             = 5
+passive_failures = 0
+eject_ms         = 3000
 
 [admin]
 address                = "127.0.0.1:9090"
@@ -118,9 +129,13 @@ func TestParseFull(t *testing.T) {
 			UpstreamResponse: 4 * time.Second,
 		},
 		Limits:   Limits{MaxConns: 500, MaxHeaderBytes: 8192},
-		Upstream: Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second},
-		Admin:    Admin{Address: "127.0.0.1:9090", MutexProfileFraction: 100, BlockProfileRate: 10000},
-		Log:      Log{BufferBytes: 0, FlushInterval: 250 * time.Millisecond},
+		Upstream: Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second, MaxRetries: 2},
+		Health: health.Options{
+			Path: "/ready?deep=1", Interval: 500 * time.Millisecond, Timeout: 250 * time.Millisecond,
+			Rise: 4, Fall: 5, PassiveFailures: 0, Eject: 3 * time.Second,
+		},
+		Admin: Admin{Address: "127.0.0.1:9090", MutexProfileFraction: 100, BlockProfileRate: 10000},
+		Log:   Log{BufferBytes: 0, FlushInterval: 250 * time.Millisecond},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got\n%+v\nwant\n%+v", c, want)
@@ -145,13 +160,15 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) || c.Log != DefaultLog() {
-		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v log %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin, c.Log)
+	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) || c.Log != DefaultLog() || c.Health != health.DefaultOptions() {
+		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v log %+v health %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin, c.Log, c.Health)
 	}
 	// max_idle_per_backend = 0 turns reuse off; admin may bind ::1 or
 	// localhost, port 0 included.
 	for _, extra := range []string{
-		"[upstream]\nmax_idle_per_backend = 0\n",
+		"[upstream]\nmax_idle_per_backend = 0\nmax_retries = 0\n",
+		// interval_ms = 0 turns active checks off, so any timeout is fine.
+		"[health]\ninterval_ms = 0\ntimeout_ms = 5000\n",
 		"[admin]\naddress = \"[::1]:0\"\n",
 		"[admin]\naddress = \"localhost:6060\"\n",
 	} {
@@ -261,6 +278,17 @@ func TestParseRejects(t *testing.T) {
 		{"handshake zero", base + route + pool + "[timeouts]\nhandshake_ms = 0\n", "timeouts.handshake_ms: must be from 1"},
 		{"max_idle negative", base + route + pool + "[upstream]\nmax_idle_per_backend = -1\n", "upstream.max_idle_per_backend: must be from 0 to 100000, got -1"},
 		{"upstream idle zero", base + route + pool + "[upstream]\nidle_timeout_ms = 0\n", "upstream.idle_timeout_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"max_retries range", base + route + pool + "[upstream]\nmax_retries = 3\n", "upstream.max_retries: must be from 0 to 2, got 3"},
+		{"health path relative", base + route + pool + "[health]\npath = \"healthz\"\n", `health.path: "healthz" must start with /`},
+		{"health path space", base + route + pool + "[health]\npath = \"/a b\"\n", `health.path: "/a b" contains a space`},
+		{"health interval negative", base + route + pool + "[health]\ninterval_ms = -1\n", "health.interval_ms: must be from 0 to 86400000 milliseconds, got -1"},
+		{"health timeout zero", base + route + pool + "[health]\ntimeout_ms = 0\n", "health.timeout_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"health timeout over interval", base + route + pool + "[health]\ninterval_ms = 500\ntimeout_ms = 501\n", "health.timeout_ms: 501 must not exceed interval_ms (500)"},
+		{"health rise zero", base + route + pool + "[health]\nrise = 0\n", "health.rise: must be from 1 to 100, got 0"},
+		{"health fall huge", base + route + pool + "[health]\nfall = 101\n", "health.fall: must be from 1 to 100, got 101"},
+		{"health passive negative", base + route + pool + "[health]\npassive_failures = -1\n", "health.passive_failures: must be from 0 to 10000, got -1"},
+		{"health eject zero", base + route + pool + "[health]\neject_ms = 0\n", "health.eject_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"unknown health key", base + route + pool + "[health]\ninterval = 5\n", "health.interval: unknown field"},
 		{"unknown upstream key", base + route + pool + "[upstream]\nmax_idle = 5\n", "upstream.max_idle: unknown field"},
 		{"admin public", base + route + pool + "[admin]\naddress = \"0.0.0.0:9090\"\n", `admin.address: "0.0.0.0:9090": host must be a loopback address`},
 		{"admin all interfaces", base + route + pool + "[admin]\naddress = \":9090\"\n", `admin.address: ":9090": host must be a loopback address`},

@@ -15,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 )
 
@@ -28,6 +29,7 @@ type file struct {
 	Timeouts    fileTimeouts        `toml:"timeouts"`
 	Limits      fileLimits          `toml:"limits"`
 	Upstream    fileUpstream        `toml:"upstream"`
+	Health      fileHealth          `toml:"health"`
 	Admin       fileAdmin           `toml:"admin"`
 	Log         fileLog             `toml:"log"`
 }
@@ -40,6 +42,17 @@ type fileLog struct {
 type fileUpstream struct {
 	MaxIdlePerBackend int64 `toml:"max_idle_per_backend"`
 	IdleTimeoutMS     int64 `toml:"idle_timeout_ms"`
+	MaxRetries        int64 `toml:"max_retries"`
+}
+
+type fileHealth struct {
+	Path            string `toml:"path"`
+	IntervalMS      int64  `toml:"interval_ms"`
+	TimeoutMS       int64  `toml:"timeout_ms"`
+	Rise            int64  `toml:"rise"`
+	Fall            int64  `toml:"fall"`
+	PassiveFailures int64  `toml:"passive_failures"`
+	EjectMS         int64  `toml:"eject_ms"`
 }
 
 type fileAdmin struct {
@@ -99,6 +112,10 @@ const (
 	maxProfileRate    = 1_000_000_000
 	maxLogBuffer      = 16 << 20
 	maxLogFlushMS     = 60_000
+	maxRetries        = 2
+	maxRiseFall       = 100
+	maxPassive        = 10_000
+	maxHealthPath     = 1024
 )
 
 // hashKeyClientIP and hashKeyHeaderPrefix are the forms of hash_key.
@@ -172,6 +189,7 @@ func (v *validator) config(f *file) *Config {
 		Timeouts: v.timeouts(&f.Timeouts),
 		Limits:   v.limits(&f.Limits),
 		Upstream: v.upstream(&f.Upstream),
+		Health:   v.health(&f.Health),
 		Admin:    v.admin(&f.Admin),
 		Log:      v.log(&f.Log),
 	}
@@ -462,7 +480,88 @@ func (v *validator) upstream(fu *fileUpstream) Upstream {
 			u.IdleTimeout = time.Duration(ms) * time.Millisecond
 		}
 	}
+	if v.md.IsDefined("upstream", "max_retries") {
+		if n := fu.MaxRetries; n < 0 || n > maxRetries {
+			v.errorf("upstream.max_retries", "must be from 0 to %d, got %d", maxRetries, n)
+		} else {
+			u.MaxRetries = int(n)
+		}
+	}
 	return u
+}
+
+// health validates the [health] table.
+func (v *validator) health(fh *fileHealth) health.Options {
+	h := health.DefaultOptions()
+	if v.md.IsDefined("health", "path") {
+		if err := checkHealthPath(fh.Path); err != nil {
+			v.errorf("health.path", "%v", err)
+		} else {
+			h.Path = fh.Path
+		}
+	}
+	for _, f := range []struct {
+		key      string
+		n        int64
+		min, max int64
+		dst      *time.Duration
+	}{
+		{"interval_ms", fh.IntervalMS, 0, maxTimeoutMS, &h.Interval},
+		{"timeout_ms", fh.TimeoutMS, 1, maxTimeoutMS, &h.Timeout},
+		{"eject_ms", fh.EjectMS, 1, maxTimeoutMS, &h.Eject},
+	} {
+		if !v.md.IsDefined("health", f.key) {
+			continue
+		}
+		if f.n < f.min || f.n > f.max {
+			v.errorf("health."+f.key, "must be from %d to %d milliseconds, got %d", f.min, f.max, f.n)
+			continue
+		}
+		*f.dst = time.Duration(f.n) * time.Millisecond
+	}
+	for _, f := range []struct {
+		key      string
+		n        int64
+		min, max int64
+		dst      *int
+	}{
+		{"rise", fh.Rise, 1, maxRiseFall, &h.Rise},
+		{"fall", fh.Fall, 1, maxRiseFall, &h.Fall},
+		{"passive_failures", fh.PassiveFailures, 0, maxPassive, &h.PassiveFailures},
+	} {
+		if !v.md.IsDefined("health", f.key) {
+			continue
+		}
+		if f.n < f.min || f.n > f.max {
+			v.errorf("health."+f.key, "must be from %d to %d, got %d", f.min, f.max, f.n)
+			continue
+		}
+		*f.dst = int(f.n)
+	}
+	// Checks of one backend run one after another, so a timeout longer
+	// than the interval would silently stretch the interval.
+	if h.Interval > 0 && h.Timeout > h.Interval {
+		v.errorf("health.timeout_ms", "%d must not exceed interval_ms (%d)", h.Timeout.Milliseconds(), h.Interval.Milliseconds())
+	}
+	return h
+}
+
+// checkHealthPath checks that p can go in a request line as it is: an
+// absolute path, optionally with a query, without spaces or control
+// characters.
+func checkHealthPath(p string) error {
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%q must start with /", p)
+	}
+	if len(p) > maxHealthPath {
+		return fmt.Errorf("must be at most %d bytes", maxHealthPath)
+	}
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c <= ' ' || c >= 0x7f {
+			return fmt.Errorf("%q contains a space, control or non-ASCII byte", p)
+		}
+	}
+	return nil
 }
 
 func (v *validator) log(fl *fileLog) Log {

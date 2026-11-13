@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -25,6 +26,7 @@ type Config struct {
 	Timeouts Timeouts
 	Limits   Limits
 	Upstream Upstream
+	Health   health.Options
 	Admin    Admin
 	Log      Log
 }
@@ -165,6 +167,9 @@ type Upstream struct {
 	// request before it is closed. It should be shorter than the backends'
 	// own keep-alive timeouts, so the proxy is usually the side to close.
 	IdleTimeout time.Duration
+	// MaxRetries is how many other backends a failed request may be tried
+	// on, 0 to 2. See conn's retry rules for which failures qualify.
+	MaxRetries int
 }
 
 // Options returns the settings in the form upstream.NewRegistry takes.
@@ -174,7 +179,7 @@ func (u Upstream) Options() upstream.Options {
 
 // DefaultUpstream returns the pool settings used when the file sets none.
 func DefaultUpstream() Upstream {
-	return Upstream{MaxIdlePerBackend: 100, IdleTimeout: 30 * time.Second}
+	return Upstream{MaxIdlePerBackend: 100, IdleTimeout: 30 * time.Second, MaxRetries: 1}
 }
 
 // Admin configures the admin listener, which serves pprof. It applies from

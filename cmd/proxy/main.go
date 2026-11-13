@@ -76,7 +76,7 @@ func checkConfig(path string, stdout, stderr io.Writer) int {
 	cfg, err := config.Load(path)
 	var snap *config.Snapshot
 	if err == nil {
-		snap, err = config.NewSnapshot(cfg, nil)
+		snap, err = config.NewSnapshot(cfg, config.Runtime{})
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -148,7 +148,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	// connection: requests that end later close their upstream connection
 	// instead of parking it.
 	defer reg.Close()
-	snap, err := config.NewSnapshot(cfg, reg)
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg})
 	if err != nil {
 		return err
 	}

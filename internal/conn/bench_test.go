@@ -118,7 +118,7 @@ func benchProxy(b *testing.B, backend string, reuse bool) string {
 	}
 	reg := upstream.NewRegistry(c.Upstream.Options())
 	b.Cleanup(reg.Close)
-	snap, err := config.NewSnapshot(c, reg)
+	snap, err := config.NewSnapshot(c, config.Runtime{Conns: reg})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -170,7 +170,7 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	}
 	reg := upstream.NewRegistry(cfg.Upstream.Options())
 	t.Cleanup(reg.Close)
-	snap, err := config.NewSnapshot(cfg, reg)
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg})
 	if err != nil {
 		t.Fatalf("proxy snapshot: %v", err)
 	}

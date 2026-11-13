@@ -100,7 +100,7 @@ func newSnapshot(t *testing.T, c *config.Config) *config.Snapshot {
 	t.Helper()
 	reg := upstream.NewRegistry(c.Upstream.Options())
 	t.Cleanup(reg.Close)
-	snap, err := config.NewSnapshot(c, reg)
+	snap, err := config.NewSnapshot(c, config.Runtime{Conns: reg})
 	if err != nil {
 		t.Fatal(err)
 	}

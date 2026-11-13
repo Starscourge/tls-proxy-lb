@@ -9,7 +9,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -38,7 +40,7 @@ func mustSnapshot(t *testing.T, src string) *Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewSnapshot(c, nil)
+	s, err := NewSnapshot(c, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +134,7 @@ default_key  = "certs/a.test.key"
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewSnapshot(c, nil)
+	_, err = NewSnapshot(c, Runtime{})
 	if err == nil {
 		t.Fatal("bad certificates accepted")
 	}
@@ -181,17 +183,17 @@ func TestNewSnapshotRejectsDanglingPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Routes[0].Pool = "gone"
-	if _, err := NewSnapshot(c, nil); err == nil {
+	if _, err := NewSnapshot(c, Runtime{}); err == nil {
 		t.Fatal("route to an unknown pool accepted")
 	}
 	c.Routes[0].Pool = "p"
 	c.DefaultPool = "gone"
-	if _, err := NewSnapshot(c, nil); err == nil {
+	if _, err := NewSnapshot(c, Runtime{}); err == nil {
 		t.Fatal("unknown default pool accepted")
 	}
 	c.DefaultPool = ""
 	c.Timeouts.Idle = 0
-	if _, err := NewSnapshot(c, nil); err == nil {
+	if _, err := NewSnapshot(c, Runtime{}); err == nil {
 		t.Fatal("zero timeout accepted")
 	}
 }
@@ -250,7 +252,10 @@ backends = [{ address = "127.0.0.1:8000" }]
 	}
 	reg := upstream.NewRegistry(c.Upstream.Options())
 	defer reg.Close()
-	s, err := NewSnapshot(c, reg)
+	chk := health.NewChecker(health.Config{Options: health.Options{}})
+	defer chk.Close()
+	m := metrics.New(metrics.Sources{})
+	s, err := NewSnapshot(c, Runtime{Conns: reg, Health: chk, Metrics: m})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,11 +269,28 @@ backends = [{ address = "127.0.0.1:8000" }]
 	if !p[0].Conns.Reuse() {
 		t.Fatal("registry pool does not reuse with the default settings")
 	}
-	s, err = NewSnapshot(c, nil)
+	// Health belongs to the address, like connections; stats to the
+	// backend in its pool.
+	if p[0].Health == nil || p[0].Health != q[0].Health || p[0].Health != chk.Target("127.0.0.1:8000") || p[1].Health == p[0].Health {
+		t.Fatal("health targets not shared by address")
+	}
+	if s.Pool("p").Health != chk {
+		t.Fatal("pool not given the checker")
+	}
+	if p[0].Stats != m.Backend("p", "127.0.0.1:8000") || p[0].Stats == q[0].Stats {
+		t.Fatal("backend stats not keyed by pool and address")
+	}
+	if s.Pool("p").Stats != m.Pool("p") || s.Pool("p").Stats == s.Pool("q").Stats {
+		t.Fatal("pool stats not keyed by pool")
+	}
+	s, err = NewSnapshot(c, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if b := s.Pool("p").Backends[0]; b.Conns == nil || b.Conns.Reuse() {
 		t.Fatal("without a registry a backend must dial per request")
+	}
+	if b := s.Pool("p").Backends[0]; b.Health != nil || b.Stats == nil || s.Pool("p").Stats == nil {
+		t.Fatal("without a runtime a backend must be always healthy and still have stats")
 	}
 }

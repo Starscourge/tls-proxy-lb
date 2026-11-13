@@ -7,7 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -22,12 +24,13 @@ import (
 // The pools' own atomic state (in-flight counters, rotation counters) is
 // the only part that moves, and it belongs to the pools, not the snapshot.
 type Snapshot struct {
-	// Listeners, Timeouts, Limits, Upstream and Admin are copied from the
-	// Config. Callers must not modify Listeners.
+	// Listeners, Timeouts, Limits, Upstream, Health and Admin are copied
+	// from the Config. Callers must not modify Listeners.
 	Listeners []Listener
 	Timeouts  Timeouts
 	Limits    Limits
 	Upstream  Upstream
+	Health    health.Options
 	Admin     Admin
 	// Certs are the route and default certificates, read by every TLS
 	// handshake through tlsx.ServerConfig.
@@ -38,16 +41,30 @@ type Snapshot struct {
 	def    *lb.Pool
 }
 
+// Runtime is the process-wide state a snapshot's pools are wired to. It
+// outlives snapshots: a snapshot built after a reload gets the same
+// connection pools, health targets and counters for the same backends.
+// Any field may be nil, as for -check-config.
+type Runtime struct {
+	// Conns supplies each backend's connection pool, by address. Nil
+	// leaves every backend dialling a new connection per request.
+	Conns *upstream.Registry
+	// Health supplies each backend's health target, by address. Nil
+	// leaves every backend always healthy.
+	Health *health.Checker
+	// Metrics supplies each pool's and backend's stats. Nil leaves them
+	// counting into stats no one reads.
+	Metrics *metrics.Metrics
+}
+
 // NewSnapshot builds the pools and route table for c and loads its
-// certificates. c must come from Parse or Load. Each backend takes its
-// connections from reg's pool for its address; a nil reg (as for
-// -check-config) leaves every backend dialling a new connection per
-// request. Certificate problems (a
+// certificates. c must come from Parse or Load. Each pool and backend is
+// wired to rt. Certificate problems (a
 // file that does not load, a key that does not match, a certificate not
 // valid for its route's host) are reported as FieldErrors, all of them
 // joined; the other checks only catch a hand-built Config that names a pool
 // it does not define.
-func NewSnapshot(c *Config, reg *upstream.Registry) (*Snapshot, error) {
+func NewSnapshot(c *Config, rt Runtime) (*Snapshot, error) {
 	if err := c.Timeouts.Validate(); err != nil {
 		return nil, err
 	}
@@ -56,6 +73,7 @@ func NewSnapshot(c *Config, reg *upstream.Registry) (*Snapshot, error) {
 		Timeouts:  c.Timeouts,
 		Limits:    c.Limits,
 		Upstream:  c.Upstream,
+		Health:    c.Health,
 		Admin:     c.Admin,
 		pools:     make(map[string]*lb.Pool, len(c.Pools)),
 		routes:    make(map[string]*lb.Pool, len(c.Routes)),
@@ -65,9 +83,19 @@ func NewSnapshot(c *Config, reg *upstream.Registry) (*Snapshot, error) {
 		if err != nil {
 			return nil, err
 		}
-		if reg != nil {
-			for _, b := range p.Backends {
-				b.Conns = reg.Pool(b.Addr)
+		if rt.Metrics != nil {
+			p.Stats = rt.Metrics.Pool(p.Name)
+		}
+		p.Health = rt.Health
+		for _, b := range p.Backends {
+			if rt.Conns != nil {
+				b.Conns = rt.Conns.Pool(b.Addr)
+			}
+			if rt.Health != nil {
+				b.Health = rt.Health.Target(b.Addr)
+			}
+			if rt.Metrics != nil {
+				b.Stats = rt.Metrics.Backend(p.Name, b.Addr)
 			}
 		}
 		s.pools[pc.Name] = p

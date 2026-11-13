@@ -39,6 +39,14 @@ wait "$c1" "$c2" "$c3" "$w"
 stop_proxy
 
 top() { go tool pprof -top -nodecount="$2" "$1" 2>/dev/null | sed -n '/^Showing\|flat/,$p'; }
+# total_ms FILE: the profile's total delay in milliseconds.
+total_ms() {
+  go tool pprof -top "$1" 2>/dev/null | sed -n 's/.*of \([0-9.]*\)\([mu]*s\) total.*/\1 \2/p' | head -1 |
+    awk '{v = $1; if ($2 == "s") v *= 1000; if ($2 == "us") v /= 1000; print v}'
+}
+rate=$(rps "$tmp/wrk.txt")
+mutex_ms=$(total_ms "$res/mutex.pprof")
+per_req_us=$(echo "1000 * $mutex_ms / ($rate * $window)" | bc -l)
 {
   echo "# Phase 4: mutex, block and CPU profiles under load"
   header
@@ -49,6 +57,12 @@ top() { go tool pprof -top -nodecount="$2" "$1" 2>/dev/null | sed -n '/^Showing\
   echo "          (go tool pprof -top <file>; -peek <regexp> shows callers)"
   echo
   grep -E "Requests/sec|Latency  |99%" "$tmp/wrk.txt"
+  echo
+  printf "mutex wait: %.0f ms over the %d s window, about %.2f us per request at %s req/s\n" \
+    "$mutex_ms" "$window" "$per_req_us" "$rate"
+  echo
+  echo "## mutex contention by lock site (callers of Unlock; runtime.unlock is the runtime's own locks)"
+  go tool pprof -peek 'sync.\(\*Mutex\).Unlock$|^runtime.unlock$' "$res/mutex.pprof" 2>/dev/null | sed -n '/flat/,$p' | grep -v '^ *$'
   echo
   echo "## mutex contention (delay), top 15"
   top "$res/mutex.pprof" 15

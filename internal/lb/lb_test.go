@@ -79,9 +79,9 @@ func TestRoundRobinOrder(t *testing.T) {
 
 func TestLeastConnPicksMinimum(t *testing.T) {
 	bs := backends(3)
-	bs[0].inflight.Store(5)
-	bs[1].inflight.Store(2)
-	bs[2].inflight.Store(7)
+	bs[0].Stats.InFlight.Store(5)
+	bs[1].Stats.InFlight.Store(2)
+	bs[2].Stats.InFlight.Store(7)
 	lc := &LeastConnBalancer{}
 	for i := range 10 {
 		if got := lc.Pick(nil, bs); got != bs[1] {
@@ -109,8 +109,8 @@ func TestLeastConnTiesRotate(t *testing.T) {
 // TestLeastConnTiesAmongMinimum: ties are broken among the minimum only.
 func TestLeastConnTiesAmongMinimum(t *testing.T) {
 	bs := backends(4)
-	bs[0].inflight.Store(3)
-	bs[2].inflight.Store(3)
+	bs[0].Stats.InFlight.Store(3)
+	bs[2].Stats.InFlight.Store(3)
 	lc := &LeastConnBalancer{}
 	got := map[*Backend]int{}
 	for range 40 {

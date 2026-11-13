@@ -34,6 +34,9 @@ services:
       target: proxy
     image: tlslab/proxy:dev
     user: "${LAB_UID:-10001}:${LAB_GID:-10001}"
+    # A CPU limit, as a deployment would have. Go sets GOMAXPROCS from it;
+    # check-lab.sh checks the proxy's startup log says so.
+    cpus: "2"
     # Pools and routes over the three backends; see proxy.toml.
     command: ["-config", "/etc/proxy/proxy.toml"]
     volumes:

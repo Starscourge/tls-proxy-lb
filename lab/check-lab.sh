@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Lab checks. Brings the lab up (creating certificates if there are none),
 # checks each backend answers from the load generator with its own name,
-# checks the proxy's config, its TLS routing and its redirect listener
-# (lab/proxy.toml), then checks netem on backend1.
+# checks the proxy's config, that its GOMAXPROCS matches the container's CPU
+# limit, its TLS routing and its redirect listener (lab/proxy.toml), then
+# checks netem on backend1.
 #
 # Usage: lab/check-lab.sh [--no-up]
 set -euo pipefail
@@ -52,6 +53,21 @@ xbackend() {
 
 echo "== proxy config"
 "${compose[@]}" exec -T proxy /usr/local/bin/proxy -config /etc/proxy/proxy.toml -check-config
+
+echo "== GOMAXPROCS matches the container's CPU limit"
+read -r quota period < <("${compose[@]}" exec -T proxy cat /sys/fs/cgroup/cpu.max)
+[[ "$quota" != max ]] || { echo "FAIL: the proxy container has no CPU limit" >&2; exit 1; }
+want=$(( (quota + period - 1) / period ))
+# The startup line goes through the proxy's log buffer, flushed every second.
+got=""
+for _ in $(seq 30); do
+  got="$("${compose[@]}" logs --no-log-prefix proxy | grep '"msg":"proxy listening"' | tail -1 |
+    sed -n 's/.*"gomaxprocs":\([0-9]*\).*/\1/p')"
+  [[ -n "$got" ]] && break
+  sleep 0.2
+done
+[[ "$got" == "$want" ]] || { echo "FAIL: GOMAXPROCS '$got', want $want (cpu.max $quota $period)" >&2; exit 1; }
+echo "ok: cpu.max $quota $period -> GOMAXPROCS $got"
 
 echo "== proxy routes from loadgen"
 # Default pool, round-robin, with the default certificate. The container

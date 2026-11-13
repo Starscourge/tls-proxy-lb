@@ -129,6 +129,48 @@ func TestWriterConcurrent(t *testing.T) {
 	}
 }
 
+// A slow flush does not hold up writers: they fill the spare buffer while
+// the full one is being written, and flushes stay in order.
+func TestWriterWritesOutsideTheLock(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var out []string
+	first := true
+	slow := writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		wait := first
+		first = false
+		mu.Unlock()
+		if wait {
+			<-release
+		}
+		mu.Lock()
+		out = append(out, string(p))
+		mu.Unlock()
+		return len(p), nil
+	})
+	w := New(slow, 8, time.Hour)
+	w.Write([]byte("aaaa"))
+	w.Write([]byte("bbbb"))
+	done := make(chan struct{})
+	go func() { w.Write([]byte("cccc")); close(done) }() // flushes aaaabbbb, blocks in w
+	time.Sleep(20 * time.Millisecond)
+	// This write lands in the spare buffer without waiting for the flush.
+	wrote := make(chan struct{})
+	go func() { w.Write([]byte("d")); close(wrote) }()
+	select {
+	case <-wrote:
+	case <-time.After(time.Second):
+		t.Fatal("Write waited for a flush in progress")
+	}
+	close(release)
+	<-done
+	w.Close()
+	if got := strings.Join(out, "|"); got != "aaaabbbb|ccccd" && got != "aaaabbbb|dcccc" {
+		t.Fatalf("writes %q", got)
+	}
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

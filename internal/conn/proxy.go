@@ -31,6 +31,9 @@ const (
 	// read yet.
 	lingerTimeout  = 500 * time.Millisecond
 	lingerMaxBytes = 256 << 10
+	// writerGrace bounds the wait, once a response is complete, for a
+	// request writer that is still running (bodyWriter.finished).
+	writerGrace = 50 * time.Millisecond
 )
 
 // StatusClientClosed is logged (never sent) when the client goes away before
@@ -53,6 +56,11 @@ type Proxy struct {
 	// TLS, if non-nil, makes the proxy terminate TLS (tlsx.ServerConfig).
 	// Nil serves plain HTTP.
 	TLS *tls.Config
+
+	// afterRequestWrite, if set, runs in the request writer goroutine after
+	// the request is sent and before the writer reports done. Tests use it
+	// to hold the writer back past the response.
+	afterRequestWrite func()
 }
 
 // Validate checks the proxy's settings.
@@ -403,10 +411,12 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		werr = cc.bw.Flush()
 	}
 	// The response is complete or failed; either way the backend gets no
-	// more of the request body. A writer still running now means the
-	// backend answered before taking the whole body, so the connection is
-	// not reused.
-	writerFinished := w.done()
+	// more of the request body. If the connection is otherwise fit to
+	// reuse, a running writer gets a short grace to finish; one that does
+	// not means the backend answered before taking the whole body, so the
+	// connection is not reused. Otherwise the writer is stopped at once.
+	reusable := werr == nil && upstreamKeepAlive && (respBody == nil || respBody.EOF())
+	writerFinished := reusable && w.finished()
 	w.stop()
 	if respBody != nil {
 		rec.bytesOut = respBody.N()
@@ -433,9 +443,8 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	// Reuse needs the request sent whole, the response read whole, and a
 	// backend that framed it and did not ask to close. The connection is
 	// parked before logging, so the next request can have it at once.
-	if upstreamKeepAlive && writerFinished && w.err == nil &&
-		(reqBody == nil || reqBody.EOF()) &&
-		(respBody == nil || respBody.EOF()) {
+	if reusable && writerFinished && w.err == nil &&
+		(reqBody == nil || reqBody.EOF()) {
 		b.Conns.Put(uc)
 		uc = nil
 	}
@@ -450,7 +459,7 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 		*w = bodyWriter{}
 		return nil, err
 	}
-	w.start(uc, req, reqBody)
+	w.start(uc, req, reqBody, cc.p.afterRequestWrite)
 	return cc.readResponse(uc, req)
 }
 
@@ -725,8 +734,9 @@ type bodyWriter struct {
 }
 
 // start sends req on uc, inline or from a new goroutine; w must not be
-// running.
-func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body) {
+// running. after, if non-nil, runs in the goroutine once the request is
+// sent (Proxy.afterRequestWrite).
+func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, after func()) {
 	*w = bodyWriter{uc: uc, reqBody: reqBody}
 	if reqBody == nil {
 		// No body: nothing can block on the client, so write inline.
@@ -737,6 +747,9 @@ func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.
 	go func() {
 		defer close(w.ch)
 		w.err = writeRequest(uc, req)
+		if after != nil {
+			after()
+		}
 		if w.err != nil && clientBodyFailed(reqBody) {
 			// The client failed mid-body. No useful response can follow;
 			// closing the upstream wakes the response reader at once.
@@ -762,6 +775,30 @@ func (w *bodyWriter) done() bool {
 	case <-w.ch:
 		return true
 	default:
+		return false
+	}
+}
+
+// finished reports whether the writer finished on its own, waiting up to
+// writerGrace for it. It is called only once the response is complete
+// and the connection is otherwise fit to reuse.
+//
+// An instant check is not enough. A backend that read the whole body has
+// had the writer's last flush, but the goroutine may not have returned
+// from it yet: the backend can answer and the response reach the client
+// first. Taken for an early answer, that would close a reusable
+// connection. A writer still running after the grace is blocked on the
+// client's body or on a backend that stopped reading it.
+func (w *bodyWriter) finished() bool {
+	if w.done() {
+		return true
+	}
+	t := time.NewTimer(writerGrace)
+	defer t.Stop()
+	select {
+	case <-w.ch:
+		return true
+	case <-t.C:
 		return false
 	}
 }

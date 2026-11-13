@@ -166,6 +166,31 @@ func TestReuseAfterRequestBody(t *testing.T) {
 	}
 }
 
+// A request writer that returns only after the response has reached the
+// client still leaves the connection reusable. The backend has the whole
+// body once the writer's last flush lands, so it can answer before the
+// writer goroutine runs again; on a loaded machine that gap is real.
+func TestReuseWhenWriterFinishesLate(t *testing.T) {
+	b := okBackend(t)
+	c := parseConfig(t, fmt.Sprintf("default_pool = \"p\"\n[pool.p]\nbackends = [{ address = %q }]\n", b.addr))
+	snap := newSnapshot(t, c)
+	addr, _, _ := startProxyWith(t, snap, func(p *Proxy) {
+		p.afterRequestWrite = func() { time.Sleep(writerGrace / 5) }
+	})
+	for _, raw := range []string{
+		"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello",
+		"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+	} {
+		if resp, _ := request(t, addr, raw, "POST"); resp.StatusCode != 200 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+		waitParked(t, func() int { return idleConns(snap) })
+	}
+	if c := b.conns.Load(); c != 1 {
+		t.Fatalf("backend saw %d connections, want 1", c)
+	}
+}
+
 // With max_idle_per_backend = 0 every request asks the backend to close
 // and gets a connection of its own.
 func TestReuseOff(t *testing.T) {

@@ -110,8 +110,18 @@ func newSnapshot(t *testing.T, c *config.Config) *config.Snapshot {
 // startProxySnapshot runs a Proxy serving snap.
 func startProxySnapshot(t *testing.T, snap *config.Snapshot) (string, *Server, *logBuf) {
 	t.Helper()
+	return startProxyWith(t, snap, nil)
+}
+
+// startProxyWith is startProxySnapshot with mut applied to the Proxy
+// before it serves.
+func startProxyWith(t *testing.T, snap *config.Snapshot, mut func(*Proxy)) (string, *Server, *logBuf) {
+	t.Helper()
 	logs := &logBuf{}
 	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(logs, nil))}
+	if mut != nil {
+		mut(p)
+	}
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}

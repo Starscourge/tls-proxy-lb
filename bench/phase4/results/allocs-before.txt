@@ -1,0 +1,32 @@
+# Phase 4: allocations per request (before)
+date:    2026-11-13T05:56:18Z
+commit:  23357af
+go:      go1.27.4 linux/amd64
+command: go test -run '^$' -bench BenchmarkProxy -benchmem -count 5 ./internal/conn
+
+goos: linux
+goarch: amd64
+pkg: github.com/Starscourge/tls-proxy-lb/internal/conn
+cpu: Intel(R) Core(TM) Ultra 7 155H
+BenchmarkProxy/GET/reuse=false-22         	    6622	    166922 ns/op	   23845 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=false-22         	    6657	    167678 ns/op	   23840 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=false-22         	    6162	    167830 ns/op	   23910 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=false-22         	    6825	    166180 ns/op	   23987 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=false-22         	    6206	    163995 ns/op	   23895 B/op	      80 allocs/op
+BenchmarkProxy/POST/reuse=false-22        	    6350	    177199 ns/op	   24342 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=false-22        	    6421	    180799 ns/op	   24504 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=false-22        	    5958	    180216 ns/op	   24514 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=false-22        	    6924	    184520 ns/op	   24469 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=false-22        	    6693	    187279 ns/op	   24560 B/op	      89 allocs/op
+BenchmarkProxy/GET/reuse=true-22          	    7188	    167245 ns/op	   23997 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=true-22          	    6318	    170093 ns/op	   23828 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=true-22          	    6567	    162002 ns/op	   24064 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=true-22          	    7118	    165855 ns/op	   24081 B/op	      80 allocs/op
+BenchmarkProxy/GET/reuse=true-22          	    6692	    168376 ns/op	   24049 B/op	      80 allocs/op
+BenchmarkProxy/POST/reuse=true-22         	    6825	    171925 ns/op	   24588 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=true-22         	    7195	    176447 ns/op	   24661 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=true-22         	    6212	    183437 ns/op	   24472 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=true-22         	    5965	    175382 ns/op	   24516 B/op	      89 allocs/op
+BenchmarkProxy/POST/reuse=true-22         	    6805	    180892 ns/op	   24404 B/op	      89 allocs/op
+PASS
+ok  	github.com/Starscourge/tls-proxy-lb/internal/conn	24.248s

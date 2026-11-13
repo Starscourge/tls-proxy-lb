@@ -19,8 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/admin"
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
@@ -59,6 +62,15 @@ type ProxyOptions struct {
 	MaxIdlePerBackend int
 	UpstreamIdle      time.Duration
 	NoReuse           bool
+	// MaxRetries, if set, goes to upstream.max_retries.
+	MaxRetries *int
+	// Health, if set, is written to the [health] table. Nil turns active
+	// and passive checks off, so tests about other things see neither
+	// probe requests nor ejections.
+	Health *health.Options
+	// Admin starts the admin listener (/metrics, /status) on a random
+	// loopback port.
+	Admin bool
 	// Logger receives the access log. Nil logs to the test output.
 	Logger *slog.Logger
 }
@@ -68,6 +80,12 @@ type Proxy struct {
 	*conn.Server
 	// Snapshot is the config the proxy serves, for reaching its pools.
 	Snapshot *config.Snapshot
+	// Health and Metrics are the proxy's health checker and metrics.
+	Health  *health.Checker
+	Metrics *metrics.Metrics
+	// AdminURL is http://host:port of the admin listener, if
+	// ProxyOptions.Admin was set.
+	AdminURL string
 	// ConfigPath is the generated config file; Dir is its directory, where
 	// certificates can be written for the config to name.
 	ConfigPath string
@@ -159,6 +177,17 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	if opts.UpstreamIdle != 0 {
 		fmt.Fprintf(&src, "idle_timeout_ms = %d\n", opts.UpstreamIdle.Milliseconds())
 	}
+	if opts.MaxRetries != nil {
+		fmt.Fprintf(&src, "max_retries = %d\n", *opts.MaxRetries)
+	}
+
+	src.WriteString("\n[health]\n")
+	if h := opts.Health; h != nil {
+		fmt.Fprintf(&src, "path = %q\ninterval_ms = %d\ntimeout_ms = %d\nrise = %d\nfall = %d\npassive_failures = %d\neject_ms = %d\n",
+			h.Path, h.Interval.Milliseconds(), h.Timeout.Milliseconds(), h.Rise, h.Fall, h.PassiveFailures, h.Eject.Milliseconds())
+	} else {
+		src.WriteString("interval_ms = 0\npassive_failures = 0\n")
+	}
 
 	path := filepath.Join(dir, "proxy.toml")
 	if err := os.WriteFile(path, []byte(src.String()), 0o600); err != nil {
@@ -168,25 +197,33 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	if err != nil {
 		t.Fatalf("proxy config:\n%s\n%v", src.String(), err)
 	}
-	reg := upstream.NewRegistry(cfg.Upstream.Options())
-	t.Cleanup(reg.Close)
-	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg})
-	if err != nil {
-		t.Fatalf("proxy snapshot: %v", err)
-	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(t.Output(), nil))
 	}
+	// The same wiring as cmd/proxy's run.
+	reg := upstream.NewRegistry(cfg.Upstream.Options())
+	t.Cleanup(reg.Close)
+	chk := health.NewChecker(health.Config{
+		Options: cfg.Health,
+		Logger:  logger,
+		OnEject: func(addr string) { reg.Pool(addr).Flush() },
+	})
+	t.Cleanup(chk.Close)
+	srv := conn.NewServer(cfg.Limits.MaxConns, logger)
+	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len})
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m})
+	if err != nil {
+		t.Fatalf("proxy snapshot: %v", err)
+	}
 	store := config.NewStore(snap)
-	p := &conn.Proxy{Config: store, Logger: logger}
+	p := &conn.Proxy{Config: store, Logger: logger, Metrics: m}
 	if opts.Scheme == config.ModeHTTPS {
 		p.TLS = tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs })
 	}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("proxy: %v", err)
 	}
-	srv := conn.NewServer(snap.Limits.MaxConns, logger)
 	ln, err := net.Listen("tcp", snap.Listeners[0].Address)
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
@@ -200,10 +237,66 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 		}
 	})
 	addr := ln.Addr().String()
-	return &Proxy{
-		Server: srv, Snapshot: snap, ConfigPath: path, Dir: dir, Scheme: opts.Scheme, CA: ca, Addr: addr,
+	px := &Proxy{
+		Server: srv, Snapshot: snap, Health: chk, Metrics: m,
+		ConfigPath: path, Dir: dir, Scheme: opts.Scheme, CA: ca, Addr: addr,
 		URL: opts.Scheme + "://a.test:" + port(addr),
 	}
+	if opts.Admin {
+		adm, err := admin.Listen(context.Background(), admin.Options{
+			Address: "127.0.0.1:0",
+			Metrics: m.Handler(),
+			Status:  admin.StatusSource{Config: store, Health: chk, Conns: reg},
+		}, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		admc := make(chan error, 1)
+		go func() { admc <- adm.Serve() }()
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			adm.Shutdown(ctx)
+			if err := <-admc; err != nil {
+				t.Errorf("admin Serve: %v", err)
+			}
+		})
+		px.AdminURL = "http://" + adm.Addr()
+	}
+	return px
+}
+
+// Status fetches and decodes the admin /status page. The proxy must have
+// been started with ProxyOptions.Admin.
+func (p *Proxy) Status(t testing.TB) admin.Status {
+	t.Helper()
+	if p.AdminURL == "" {
+		t.Fatal("Status: proxy started without Admin")
+	}
+	c := &http.Client{Timeout: 5 * time.Second}
+	defer c.CloseIdleConnections()
+	resp, err := c.Get(p.AdminURL + "/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st admin.Status
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("/status: %v", err)
+	}
+	return st
+}
+
+// BackendStatus returns addr's entry in st, or fails the test.
+func BackendStatus(t testing.TB, st admin.Status, addr string) admin.BackendStatus {
+	t.Helper()
+	for _, b := range st.Backends {
+		if b.Address == addr {
+			return b
+		}
+	}
+	t.Fatalf("%s not in /status", addr)
+	return admin.BackendStatus{}
 }
 
 func port(addr string) string {

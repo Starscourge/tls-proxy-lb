@@ -42,6 +42,9 @@ type Backend struct {
 type BackendOptions struct {
 	Delay    time.Duration
 	FailRate float64
+	// HealthzFail starts the backend with /healthz failing and every other
+	// endpoint working; Server.SetHealthy changes it.
+	HealthzFail bool
 	// Quiet drops the backend's log lines instead of writing them to the
 	// test output, for tests that send thousands of requests. The in-memory
 	// request log is kept either way.
@@ -87,11 +90,12 @@ func (b *Backend) start(addr string) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	srv, err := testbackend.New(testbackend.Config{
-		Name:     b.name,
-		Delay:    b.opts.Delay,
-		FailRate: b.opts.FailRate,
-		Logger:   logger,
-		Record:   true,
+		Name:        b.name,
+		Delay:       b.opts.Delay,
+		FailRate:    b.opts.FailRate,
+		HealthzFail: b.opts.HealthzFail,
+		Logger:      logger,
+		Record:      true,
 	})
 	if err != nil {
 		t.Fatalf("testbackend %s: %v", b.name, err)

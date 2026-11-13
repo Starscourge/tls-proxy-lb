@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 )
 
 // accessRecord collects what the access log line reports for one request.
@@ -26,7 +28,15 @@ type accessRecord struct {
 	// again on a new one.
 	reused  bool
 	retried bool
+	// retries is how many other backends the request went to after the
+	// first failed; backend is the last one.
+	retries int
 	err     error
+	// poolStats and backendStats are where the request is counted: the
+	// backend's if it reached one, else the pool's, else the proxy's
+	// unrouted counts.
+	poolStats    *metrics.PoolStats
+	backendStats *metrics.BackendStats
 }
 
 // newRecord starts the connection's access record afresh for req.
@@ -40,8 +50,10 @@ func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecor
 // direction, whether the upstream connection was reused (and whether the
 // request was retried on a new one), for HTTPS the SNI, TLS version and
 // whether the session was resumed, and the error that ended the request, if
-// any.
+// any. It also counts the request in the metrics.
 func (cc *clientConn) logAccess(r *accessRecord) {
+	total := time.Since(r.start)
+	cc.count(r, total)
 	attrs := []slog.Attr{
 		slog.String("client", cc.ip),
 		slog.String("scheme", cc.scheme),
@@ -52,13 +64,16 @@ func (cc *clientConn) logAccess(r *accessRecord) {
 		slog.String("pool", r.pool),
 		slog.String("backend", r.backend),
 		slog.Float64("upstream_ms", ms(r.upstream)),
-		slog.Float64("total_ms", ms(time.Since(r.start))),
+		slog.Float64("total_ms", ms(total)),
 		slog.Int64("bytes_in", r.bytesIn),
 		slog.Int64("bytes_out", r.bytesOut),
 		slog.Bool("reused", r.reused),
 	}
 	if r.retried {
 		attrs = append(attrs, slog.Bool("retried", true))
+	}
+	if r.retries > 0 {
+		attrs = append(attrs, slog.Int("retries", r.retries))
 	}
 	if cc.scheme == "https" {
 		attrs = append(attrs,
@@ -70,6 +85,24 @@ func (cc *clientConn) logAccess(r *accessRecord) {
 		attrs = append(attrs, slog.String("error", r.err.Error()))
 	}
 	cc.log.LogAttrs(context.Background(), slog.LevelInfo, "access", attrs...)
+}
+
+// count adds the request's status to its counts and its total time to its
+// pool's latency histogram.
+func (cc *clientConn) count(r *accessRecord, total time.Duration) {
+	switch {
+	case r.backendStats != nil:
+		r.backendStats.Codes.Add(r.status)
+	case r.poolStats != nil:
+		r.poolStats.NoBackend.Add(r.status)
+	default:
+		if u := cc.p.Metrics.Unrouted(); u != nil {
+			u.Add(r.status)
+		}
+	}
+	if r.poolStats != nil && r.poolStats.Latency != nil {
+		r.poolStats.Latency.Observe(total.Seconds())
+	}
 }
 
 // ms converts d to milliseconds with microsecond precision; negative stays -1.

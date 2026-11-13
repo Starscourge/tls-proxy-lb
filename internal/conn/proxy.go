@@ -18,6 +18,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -41,8 +42,9 @@ const (
 const StatusClientClosed = 499
 
 // Proxy routes each request on a client connection by its Host header to a
-// pool, picks a backend with the pool's balancer and forwards the request
-// over a fresh upstream connection. It implements Handler.
+// pool, picks a healthy backend with the pool's balancer and forwards the
+// request over a kept-alive or new upstream connection, trying another
+// backend if the first fails before answering. It implements Handler.
 //
 // With TLS set, each connection starts with a TLS handshake, and every
 // request on it must name the host its SNI named (421 otherwise).
@@ -56,6 +58,9 @@ type Proxy struct {
 	// TLS, if non-nil, makes the proxy terminate TLS (tlsx.ServerConfig).
 	// Nil serves plain HTTP.
 	TLS *tls.Config
+	// Metrics, if set, counts requests that reach no pool. Requests that
+	// do are counted in their pool's and backend's stats.
+	Metrics *metrics.Metrics
 
 	// afterRequestWrite, if set, runs in the request writer goroutine after
 	// the request is sent and before the writer reports done. Tests use it
@@ -181,6 +186,13 @@ type clientConn struct {
 	reqFlush  flushingReader
 	respFlush flushingReader
 	writer    bodyWriter
+	// interimSent is set once a 1xx response has been relayed for the
+	// current request, after which it cannot go to another backend.
+	interimSent bool
+	// tried holds the backends the current request has been sent to, and
+	// pickBuf the candidates for its next one.
+	tried   []*lb.Backend
+	pickBuf []*lb.Backend
 }
 
 // tlsInfo is what the access log reports about a connection's TLS session.
@@ -299,9 +311,11 @@ func (cc *clientConn) headerError(start time.Time, err error, timedOut bool) {
 	cc.logAccess(rec)
 }
 
-// proxy routes req to a pool, picks a backend, forwards req to it and the
-// response back. It reports whether the client connection can carry
-// another request.
+// proxy routes req to a pool and forwards it to a backend the pool's
+// balancer picks, then the response back. If the backend fails before any
+// response byte has reached the client, the request may go to another
+// backend (see retryElsewhere). It reports whether the client connection
+// can carry another request.
 func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *http.Request, start time.Time) bool {
 	rec := cc.newRecord(start, req)
 	clientKeepAlive := !req.Close && req.ProtoAtLeast(1, 1)
@@ -314,43 +328,89 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	if pool == nil {
 		return cc.reject(rec, req, http.StatusNotFound, "no route for host")
 	}
-	rec.pool = pool.Name
+	rec.pool, rec.poolStats = pool.Name, pool.Stats
 	// The balancer sees the headers as the client sent them, before the
 	// proxy adds its own.
 	cc.info = lb.RequestInfo{ClientIP: cc.ip, Header: req.Header}
+	defer func() { cc.info.Header = nil }()
 	b := pool.Pick(&cc.info)
-	cc.info.Header = nil
 	if b == nil {
-		return cc.reject(rec, req, http.StatusServiceUnavailable, "no backend available")
+		// Every backend is unhealthy: answer at once, without a dial.
+		return cc.reject(rec, req, http.StatusServiceUnavailable, "no healthy backend")
 	}
-	// The count covers the whole exchange, until the response has been
-	// written to the client or has failed.
-	b.Acquire()
-	defer b.Release()
-	rec.backend = b.Addr
-
 	httpx.PrepareRequest(req, cc.ip, cc.scheme, b.Conns.Reuse())
 
-	upStart := time.Now()
-	uc, err := b.Conns.Get(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 	var reqBody *httpx.Body
 	if req.Body != nil && req.Body != http.NoBody {
 		// Bytes already sent upstream are flushed before waiting on the
 		// client, so a slow upload streams instead of sitting in a buffer.
-		var src io.Reader = req.Body
-		if uc != nil {
-			cc.reqFlush = flushingReader{r: req.Body, src: cc.br, w: uc.W, wrap: wrapUpstreamErr}
-			src = &cc.reqFlush
-		}
+		// forward points the flush at the connection it sends on.
+		cc.reqFlush = flushingReader{r: req.Body, src: cc.br, wrap: wrapUpstreamErr}
 		reqBody = &cc.reqBody
-		reqBody.Reset(src, cc.c, cc.t.ClientIO)
+		reqBody.Reset(&cc.reqFlush, cc.c, cc.t.ClientIO)
 		req.Body = reqBody
 	}
+	cc.interimSent = false
+	cc.tried = append(cc.tried[:0], b)
+	for {
+		res := cc.forward(ctx, rec, pool, b, req, reqBody, head, clientKeepAlive)
+		if res.done {
+			return res.keepAlive
+		}
+		var next *lb.Backend
+		reason, ok := cc.retryElsewhere(ctx, res, req, reqBody)
+		if ok && len(cc.tried) <= snap.Upstream.MaxRetries {
+			next = pool.PickExcluding(&cc.info, cc.tried, &cc.pickBuf)
+		}
+		if next == nil {
+			cc.answerFailure(rec, res, reqBody, head)
+			return false
+		}
+		pool.Stats.Retry(reason)
+		rec.retries++
+		b = next
+		cc.tried = append(cc.tried, b)
+	}
+}
+
+// attempt is the outcome of forwarding a request to one backend.
+type attempt struct {
+	// done is set once a response was received and relayed, or failed
+	// while being relayed: the request is finished either way. keepAlive
+	// is then whether the client connection can carry another.
+	done      bool
+	keepAlive bool
+	// Otherwise the request failed before a response: dialErr if no
+	// connection could be opened, else the errors writing the request and
+	// reading the response.
+	dialErr  error
+	writeErr error
+	readErr  error
+}
+
+// forward sends req to b and relays its response. A failure before the
+// response headers is returned without answering the client, so the
+// caller can try another backend; everything after is handled here. Each
+// outcome is reported to b's health: dial failures, timeouts, resets and
+// 5xx responses as failures, other responses as successes.
+func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.Pool, b *lb.Backend, req *http.Request, reqBody *httpx.Body, head, clientKeepAlive bool) attempt {
+	// The count covers the whole exchange, until the response has been
+	// written to the client or has failed.
+	b.Acquire()
+	defer b.Release()
+	rec.backend, rec.backendStats = b.Addr, b.Stats
+	rec.reused, rec.upstream = false, -1
+
+	upStart := time.Now()
+	uc, err := b.Conns.Get(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 	if err != nil {
-		cc.dialError(rec, err, head, reqBody != nil)
-		return false
+		cc.reportFailure(ctx, b)
+		return attempt{dialErr: err}
 	}
 	rec.reused = uc.Reused()
+	if reqBody != nil {
+		cc.reqFlush.w = uc.W
+	}
 	// Every path that does not park the connection closes it. Deferred
 	// before the writer's stop, so it runs after the writer is joined. uc
 	// is nil once parked, or if the retry's dial failed.
@@ -364,23 +424,27 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	*w = bodyWriter{}
 	defer w.stop() // reached on every path; a no-op once joined
 	resp, err := cc.exchange(uc, req, reqBody, w)
-	if err != nil && retryable(uc, req, reqBody, w, err) {
+	if err != nil && retryStale(uc, req, reqBody, w, err) {
 		// The backend closed a kept-alive connection as the request went
 		// out, and sent nothing back. Once more, on a new connection.
 		uc.Discard()
 		rec.retried = true
+		pool.Stats.Retry(metrics.RetryStale)
 		uc, err = b.Conns.Dial(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 		if err != nil {
-			cc.dialError(rec, err, head, false)
-			return false
+			cc.reportFailure(ctx, b)
+			return attempt{dialErr: err}
 		}
 		rec.reused = false
 		resp, err = cc.exchange(uc, req, reqBody, w)
 	}
 	if err != nil {
 		w.stop()
-		cc.responseError(rec, reqBody, w.err, err, head)
-		return false
+		res := attempt{writeErr: w.err, readErr: err}
+		if !clientFailed(reqBody, err) {
+			cc.reportFailure(ctx, b)
+		}
+		return res
 	}
 	rec.upstream = time.Since(upStart)
 	rec.status = resp.StatusCode
@@ -424,17 +488,24 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	if reqBody != nil {
 		rec.bytesIn = reqBody.N()
 	}
+	var ce clientError
+	upstreamBodyFailed := respBody != nil && respBody.Err() != nil && !errors.As(respBody.Err(), &ce)
+	switch {
+	case upstreamBodyFailed || resp.StatusCode >= 500:
+		cc.reportFailure(ctx, b)
+	default:
+		b.Health.ReportSuccess()
+	}
 	if werr != nil {
 		// Mid-response the status line is already out, so the only signal
 		// left is closing the connection.
-		var ce clientError
-		if respBody != nil && respBody.Err() != nil && !errors.As(respBody.Err(), &ce) {
+		if upstreamBodyFailed {
 			rec.err = fmt.Errorf("upstream body: %w", respBody.Err())
 		} else {
 			rec.err = fmt.Errorf("client write: %w", werr)
 		}
 		cc.logAccess(rec)
-		return false
+		return attempt{done: true}
 	}
 	if reqBody != nil && !reqBody.EOF() {
 		keepAlive = false
@@ -449,7 +520,65 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		uc = nil
 	}
 	cc.logAccess(rec)
-	return keepAlive
+	return attempt{done: true, keepAlive: keepAlive}
+}
+
+// reportFailure counts a failure against b's health, unless the server is
+// closing: then the proxy cut the request off, not the backend.
+func (cc *clientConn) reportFailure(ctx context.Context, b *lb.Backend) {
+	if ctx.Err() == nil {
+		b.Health.ReportFailure()
+	}
+}
+
+// clientFailed reports whether a request that got no response failed
+// because of the client: its body broke off, or relaying a 1xx to it
+// failed.
+func clientFailed(reqBody *httpx.Body, readErr error) bool {
+	var ce clientError
+	return clientBodyFailed(reqBody) || errors.As(readErr, &ce)
+}
+
+// retryElsewhere reports whether a request whose attempt failed before a
+// response may be sent to another backend, and why. Whether another
+// backend is left, and the retry limit, are the caller's to check. All of
+// these must hold:
+//
+//   - The server is not closing.
+//   - No byte of a response has reached the client. A relayed 1xx counts:
+//     the client has started reading this backend's answer.
+//   - The failure was the backend's, not the client's.
+//   - A failed dial is retried for any method: nothing was sent, and not a
+//     byte of the request body has been read from the client.
+//   - Any later failure (reset, close, timeout, a malformed response) is
+//     retried only for an idempotent method without a body. The backend
+//     may have acted on the request, which is harmless only if doing it
+//     twice is; and a body streams from the client as it is sent, so it
+//     cannot be sent again.
+func (cc *clientConn) retryElsewhere(ctx context.Context, res attempt, req *http.Request, reqBody *httpx.Body) (metrics.RetryReason, bool) {
+	if ctx.Err() != nil || cc.interimSent {
+		return 0, false
+	}
+	if res.dialErr != nil {
+		return metrics.RetryDial, true
+	}
+	if reqBody != nil || !idempotent(req.Method) || clientFailed(reqBody, res.readErr) {
+		return 0, false
+	}
+	if isTimeout(res.readErr) {
+		return metrics.RetryTimeout, true
+	}
+	return metrics.RetryError, true
+}
+
+// answerFailure answers a request that no backend answered, by the last
+// attempt's failure.
+func (cc *clientConn) answerFailure(rec *accessRecord, res attempt, reqBody *httpx.Body, head bool) {
+	if res.dialErr != nil {
+		cc.dialError(rec, res.dialErr, head, reqBody != nil && !reqBody.EOF())
+		return
+	}
+	cc.responseError(rec, reqBody, res.writeErr, res.readErr, head)
 }
 
 // exchange sends req on uc and reads the response headers. w is started
@@ -463,8 +592,8 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 	return cc.readResponse(uc, req)
 }
 
-// retryable reports whether a request that failed on uc may be sent again
-// on a new connection. All of these must hold:
+// retryStale reports whether a request that failed on uc may be sent again
+// to the same backend on a new connection. All of these must hold:
 //
 //   - uc was reused: a backend may close an idle keep-alive connection at
 //     any moment, and a request sent just as it does finds the connection
@@ -481,8 +610,9 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 //     processed by a backend that crashed before answering.
 //
 // The writer must be joined; a request without a body is written inline,
-// so it always is.
-func retryable(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w *bodyWriter, err error) bool {
+// so it always is. This retry does not count against max_retries: it
+// says nothing about the backend's health.
+func retryStale(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w *bodyWriter, err error) bool {
 	if !uc.Reused() || reqBody != nil || !w.done() || uc.BytesRead() != 0 {
 		return false
 	}
@@ -572,6 +702,7 @@ func (cc *clientConn) readResponse(uc *upstream.Conn, req *http.Request) (*http.
 			// Upgrade is stripped from requests, so a 101 is a broken backend.
 			return nil, errors.New("unexpected 101 Switching Protocols")
 		case resp.StatusCode >= 100 && resp.StatusCode < 200:
+			cc.interimSent = true
 			cc.dw.Timeout = cc.t.ClientIO
 			if err := httpx.WriteInterim(cc.bw, resp); err != nil {
 				return nil, clientError{err}
@@ -686,7 +817,7 @@ type flushingReader struct {
 }
 
 func (f *flushingReader) Read(p []byte) (int, error) {
-	if f.src.Buffered() == 0 && f.w.Buffered() > 0 {
+	if f.src.Buffered() == 0 && f.w != nil && f.w.Buffered() > 0 {
 		if err := f.w.Flush(); err != nil {
 			return 0, f.wrap(err)
 		}

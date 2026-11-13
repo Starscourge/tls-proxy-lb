@@ -4,8 +4,10 @@
 // default), serves plain HTTP ("http") or redirects to HTTPS ("redirect").
 // SNI picks the certificate and the pool; requests are balanced across the
 // pool by round-robin, least-connections or consistent hashing, over
-// upstream connections kept alive and reused. An optional loopback admin
-// listener serves pprof.
+// upstream connections kept alive and reused. Active and passive health
+// checks take failing backends out of rotation, and a request that fails
+// before any response is retried on another backend. An optional loopback
+// admin listener serves /metrics, /status and pprof.
 //
 // Usage:
 //
@@ -30,7 +32,9 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/admin"
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/logbuf"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -98,10 +102,10 @@ func checkConfig(path string, stdout, stderr io.Writer) int {
 // order. Every HTTPS listener shares one tls.Config, so a session ticket
 // issued on one port resumes on another, and its certificates come from
 // whatever snapshot store holds at each handshake.
-func handlers(store *config.Store, logger *slog.Logger) ([]conn.Handler, error) {
+func handlers(store *config.Store, logger *slog.Logger, m *metrics.Metrics) ([]conn.Handler, error) {
 	tlsConfig := tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs })
-	https := &conn.Proxy{Config: store, Logger: logger, TLS: tlsConfig}
-	plain := &conn.Proxy{Config: store, Logger: logger}
+	https := &conn.Proxy{Config: store, Logger: logger, TLS: tlsConfig, Metrics: m}
+	plain := &conn.Proxy{Config: store, Logger: logger, Metrics: m}
 	snap := store.Load()
 	out := make([]conn.Handler, 0, len(snap.Listeners))
 	for _, l := range snap.Listeners {
@@ -140,22 +144,33 @@ const adminShutdownTimeout = 2 * time.Second
 //
 // Goroutines: one accept loop per listener, each started here and stopped
 // by srv.Close closing its listener; the admin server's Serve, stopped by
-// its Shutdown; and the upstream registry's reaper, stopped by reg.Close.
-// run waits for all of them to return.
+// its Shutdown; the upstream registry's reaper, stopped by reg.Close; and
+// one health prober per backend address, stopped by chk.Close. run waits
+// for all of them to return.
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready chan<- listening) error {
 	reg := upstream.NewRegistry(cfg.Upstream.Options())
 	// Deferred first, so it runs after the server has closed every client
 	// connection: requests that end later close their upstream connection
 	// instead of parking it.
 	defer reg.Close()
-	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg})
+	// An ejected backend's idle connections are likely dead; close them.
+	chk := health.NewChecker(health.Config{
+		Options: cfg.Health,
+		Logger:  logger,
+		OnEject: func(addr string) { reg.Pool(addr).Flush() },
+	})
+	defer chk.Close()
+	srv := conn.NewServer(cfg.Limits.MaxConns, logger)
+	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len})
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m})
 	if err != nil {
 		return err
 	}
 	for _, w := range snap.Certs.Warnings(time.Now()) {
 		logger.Warn("certificate", "warning", w)
 	}
-	hs, err := handlers(config.NewStore(snap), logger)
+	store := config.NewStore(snap)
+	hs, err := handlers(store, logger, m)
 	if err != nil {
 		return err
 	}
@@ -184,6 +199,8 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 			Address:              a.Address,
 			MutexProfileFraction: a.MutexProfileFraction,
 			BlockProfileRate:     a.BlockProfileRate,
+			Metrics:              m.Handler(),
+			Status:               admin.StatusSource{Config: store, Health: chk, Conns: reg},
 		}, logger)
 		if err != nil {
 			for _, l := range lns {
@@ -193,7 +210,6 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 		}
 	}
 
-	srv := conn.NewServer(snap.Limits.MaxConns, logger)
 	// GOMAXPROCS follows the container's CPU limit (Go 1.25 and later), so
 	// it can be checked against the limit from here.
 	logger.Info("proxy listening", "version", version, "addrs", addrs, "modes", modes,
@@ -201,12 +217,15 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
 		"max_conns", snap.Limits.MaxConns,
 		"max_idle_per_backend", snap.Upstream.MaxIdlePerBackend, "upstream_idle_ms", snap.Upstream.IdleTimeout.Milliseconds(),
+		"max_retries", snap.Upstream.MaxRetries,
+		"health_interval_ms", snap.Health.Interval.Milliseconds(), "health_rise", snap.Health.Rise, "health_fall", snap.Health.Fall,
+		"passive_failures", snap.Health.PassiveFailures, "eject_ms", snap.Health.Eject.Milliseconds(),
 		"gomaxprocs", runtime.GOMAXPROCS(0), "num_cpu", runtime.NumCPU())
 	started := listening{addrs: addrs}
 	adminc := make(chan error, 1)
 	if adm != nil {
 		started.admin = adm.Addr()
-		logger.Info("admin listening", "addr", started.admin, "paths", []string{"/debug/pprof/"},
+		logger.Info("admin listening", "addr", started.admin, "paths", []string{"/metrics", "/status", "/debug/pprof/"},
 			"mutex_profile_fraction", snap.Admin.MutexProfileFraction, "block_profile_rate_ns", snap.Admin.BlockProfileRate)
 		go func() { adminc <- adm.Serve() }()
 	}

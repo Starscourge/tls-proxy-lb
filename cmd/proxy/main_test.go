@@ -457,6 +457,21 @@ address = "127.0.0.1:0"
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "goroutine profile") {
 		t.Fatalf("pprof: status %d body %.80q", resp.StatusCode, body)
 	}
+	for path, want := range map[string]string{
+		"/metrics": `proxy_backend_healthy{backend="127.0.0.1:1"}`,
+		"/status":  `"address": "127.0.0.1:1"`,
+	} {
+		resp, err := c.Get("http://" + l.admin + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || !strings.Contains(string(body), want) {
+			t.Fatalf("%s: status %d, %q not in\n%s", path, resp.StatusCode, want, body)
+		}
+	}
+	c.CloseIdleConnections()
 	cancel()
 	select {
 	case err := <-errc:

@@ -781,8 +781,9 @@ check always passes and the retry is the only defence.
 
 A connection is parked only if every one of these holds:
 
-- the request writer finished on its own (not through `stop()`) and the
-  request body reached EOF;
+- the request writer finished on its own (not through `stop()`), within
+  a short grace if it was still running (below), and the request body
+  reached EOF;
 - the response body was read to EOF, or there was none;
 - the backend did not send `Connection: close` (`resp.Close`, which also
   covers HTTP/1.0 responses);
@@ -793,6 +794,30 @@ Every other path closes the connection. The connection is parked before
 the access line is written, so the next request can have it at once; an
 earlier version parked it in a deferred call, and a request on another
 client connection could dial in the gap.
+
+The writer gets that grace because "still running once the response is
+out" does not mean "the backend answered early". The backend can read
+the whole body as soon as the writer's last flush lands, and answer,
+and the proxy can relay the reply to the client, before the writer
+goroutine runs again to return and report done. An instant check took
+that for an early answer and closed a good connection. It showed up as
+a flaky `-race` test on a loaded CI runner. Under load in production it
+would quietly lower reuse for requests with bodies.
+
+The fix waits up to 50 ms (`writerGrace`) for the writer, and only when
+the connection is otherwise fit to reuse: the response went out whole
+and the backend did not ask to close. A backend that answers early and
+closes, the usual 413, is not waited on, and the upload stops at once
+as before. A backend that answers early and keeps the connection must
+read the rest of the body anyway (RFC 9112), so up to 50 ms more of it
+is forwarded. If the body ends within the grace the connection is
+reused, and otherwise it is closed. Waiting on the body's EOF instead
+does not work. For a Content-Length body, `Request.Write` reads once
+more to find EOF, and the flushing reader sends the last bytes before
+that read, so the backend can have the whole request before EOF is set.
+The common case pays nothing: the writer has usually finished, and the
+timer is built only when it has not. `BenchmarkProxy` allocations are
+unchanged.
 
 An upstream `Conn` has two ways to close. `Close` is the socket close
 that the request writer goroutine and `bodyWriter.stop` may call
@@ -912,6 +937,11 @@ liveness check against FIN, reset and stray bytes, the reaper, `Close`)
 and `internal/conn` (each rule for not reusing, checked on the pool
 itself because the liveness check and the retry would hide a connection
 parked by mistake; the retry and each case where it must not happen).
+A test-only hook, `Proxy.afterRequestWrite`, holds the request writer
+back after its last write, so the late-writer case is tested every run
+rather than when the scheduler happens to produce it. The connection is
+parked before its access line is written, so tests that read access
+lines by position wait for each line before sending the next request.
 Integration tests cover the steady state with 100 clients and a backend
 restarted between requests, over HTTP and HTTPS. The test backend counts
 accepted connections, served at `/stats`, so reuse is measured at the

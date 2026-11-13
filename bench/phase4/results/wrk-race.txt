@@ -1,6 +1,6 @@
 # Phase 4: wrk against a -race build, upstream reuse on
-date:     2026-11-13T06:33:45Z
-commit:   75d3444
+date:     2026-11-13T07:31:47Z
+commit:   956ad0d
 go:       go1.27.4 linux/amd64
 kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
 cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
@@ -13,38 +13,38 @@ command: wrk -t3 -c100 -d30s --latency http://127.0.0.1:18080/
 Running 30s test @ http://127.0.0.1:18080/
   3 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    15.53ms   15.25ms 194.38ms   86.14%
-    Req/Sec     2.61k   666.25     4.21k    69.78%
+    Latency    14.50ms   14.78ms 185.91ms   85.30%
+    Req/Sec     2.94k   337.84     3.93k    70.78%
   Latency Distribution
-     50%   11.50ms
-     75%   21.43ms
-     90%   34.92ms
-     99%   68.82ms
-  233543 requests in 30.04s, 32.52MB read
-Requests/sec:   7773.53
-Transfer/sec:      1.08MB
+     50%   10.13ms
+     75%   20.76ms
+     90%   35.10ms
+     99%   64.43ms
+  263289 requests in 30.03s, 36.66MB read
+Requests/sec:   8767.60
+Transfer/sec:      1.22MB
 
 ## POST /echo, 4 KiB body
 command: wrk -t2 -c50 -d30s --latency -s bench/phase4/post-echo.lua http://127.0.0.1:18080/
 Running 30s test @ http://127.0.0.1:18080/
   2 threads and 50 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    18.68ms   16.66ms 201.39ms   79.03%
-    Req/Sec     1.57k   381.54     2.40k    69.50%
+    Latency    18.50ms   17.14ms 165.08ms   79.20%
+    Req/Sec     1.63k   252.59     2.20k    69.17%
   Latency Distribution
-     50%   13.91ms
-     75%   25.46ms
-     90%   40.15ms
-     99%   76.69ms
-  93642 requests in 30.01s, 377.67MB read
-Requests/sec:   3120.38
-Transfer/sec:     12.58MB
+     50%   13.31ms
+     75%   26.69ms
+     90%   42.17ms
+     99%   75.49ms
+  97462 requests in 30.02s, 393.08MB read
+Requests/sec:   3247.04
+Transfer/sec:     13.10MB
 
-access log lines:          327333 (non-200: 0)
-requests on new upstream connections: 421 (retried: 0)
-upstream connections accepted by the backends during the run: 423
+access log lines:          360897 (non-200: 0)
+requests on new upstream connections: 559 (retried: 0)
+upstream connections accepted by the backends during the run: 561
 data race reports:         0
 proxy exit code:           0 (after SIGTERM)
-proxy fds:                 baseline 9, under load 142, after reaping 8
+proxy fds:                 baseline 9, under load 167, after reaping 8
 
 RESULT: PASS

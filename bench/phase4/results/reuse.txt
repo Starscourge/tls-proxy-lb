@@ -1,6 +1,6 @@
 # Phase 4: upstream connection reuse off and on
-date:     2026-11-13T06:32:25Z
-commit:   e0240f4
+date:     2026-11-13T07:33:29Z
+commit:   956ad0d
 go:       go1.27.4 linux/amd64
 kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
 cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
@@ -13,39 +13,39 @@ proxy:    GOMAXPROCS 4; 3 test backends, round-robin, GET / (14-byte body)
 Running 20s test @ http://127.0.0.1:18080/
   4 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.69ms    1.45ms  20.06ms   85.87%
-    Req/Sec    16.86k     1.09k   31.07k    83.67%
+    Latency     1.71ms    1.54ms  23.08ms   88.54%
+    Req/Sec    16.99k     1.65k   58.19k    97.00%
   Latency Distribution
-     50%    1.34ms
-     75%    2.13ms
-     90%    3.30ms
-     99%    7.37ms
-  1345762 requests in 20.10s, 187.38MB read
-Requests/sec:  66954.42
-Transfer/sec:      9.32MB
+     50%    1.32ms
+     75%    2.10ms
+     90%    3.34ms
+     99%    7.96ms
+  1353979 requests in 20.10s, 188.52MB read
+Requests/sec:  67363.61
+Transfer/sec:      9.38MB
 
 new upstream connections per second (summed over the backends):
-  t= 1s    158
-  t= 2s      7
-  t= 3s      0
+  t= 1s    153
+  t= 2s     41
+  t= 3s      4
   t= 4s      0
-  t= 5s     11
-  t= 6s     11
-  t= 7s      1
-  t= 8s      4
-  t= 9s      1
+  t= 5s      2
+  t= 6s      0
+  t= 7s     12
+  t= 8s      0
+  t= 9s      0
   t=10s      0
-  t=11s     20
-  t=12s     10
+  t=11s      0
+  t=12s      0
   t=13s      0
   t=14s      0
-  t=15s     16
+  t=15s      6
   t=16s      0
-  t=17s      0
+  t=17s      2
   t=18s      0
-  t=19s      0
+  t=19s      2
   t=20s      0
-new upstream connections: 239 in all, 74 after the first 3s
+new upstream connections: 222 in all, 24 after the first 3s
 TIME_WAIT sockets on backend ports: 3 at the start, 63 at the end (net.ipv4.tcp_max_tw_buckets = 32768)
 proxy exit code: 0
 
@@ -54,42 +54,42 @@ proxy exit code: 0
 Running 20s test @ http://127.0.0.1:18080/
   4 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     4.22ms    3.16ms  38.85ms   75.84%
-    Req/Sec     6.50k   654.21     8.04k    77.12%
+    Latency     4.09ms    3.06ms  37.78ms   76.08%
+    Req/Sec     6.73k   357.26     7.59k    66.38%
   Latency Distribution
-     50%    3.52ms
-     75%    5.57ms
-     90%    8.32ms
-     99%   15.09ms
-  517631 requests in 20.03s, 72.07MB read
-Requests/sec:  25840.09
-Transfer/sec:      3.60MB
+     50%    3.40ms
+     75%    5.35ms
+     90%    8.08ms
+     99%   14.68ms
+  535515 requests in 20.04s, 74.56MB read
+Requests/sec:  26728.41
+Transfer/sec:      3.72MB
 
 new upstream connections per second (summed over the backends):
-  t= 1s  27478
-  t= 2s  27404
-  t= 3s  28209
-  t= 4s  28491
-  t= 5s  27955
-  t= 6s  27610
-  t= 7s  27563
-  t= 8s  28527
-  t= 9s  27981
-  t=10s  27858
-  t=11s  27972
-  t=12s  21606
-  t=13s  23564
-  t=14s  25889
-  t=15s  25167
-  t=16s  26142
-  t=17s  25423
-  t=18s  25165
-  t=19s  25552
-  t=20s  12171
-new upstream connections: 517727 in all, 434636 after the first 3s
-TIME_WAIT sockets on backend ports: 304 at the start, 32757 at the end (net.ipv4.tcp_max_tw_buckets = 32768)
+  t= 1s  26457
+  t= 2s  26901
+  t= 3s  27588
+  t= 4s  27685
+  t= 5s  27215
+  t= 6s  27194
+  t= 7s  27457
+  t= 8s  27887
+  t= 9s  27321
+  t=10s  26858
+  t=11s  27473
+  t=12s  28167
+  t=13s  27446
+  t=14s  27526
+  t=15s  28164
+  t=16s  27437
+  t=17s  27642
+  t=18s  26691
+  t=19s  27521
+  t=20s  14981
+new upstream connections: 535611 in all, 454665 after the first 3s
+TIME_WAIT sockets on backend ports: 287 at the start, 32757 at the end (net.ipv4.tcp_max_tw_buckets = 32768)
 proxy exit code: 0
 
 summary:
-  reuse on:  66954.42 req/s, p99 7.37ms
-  reuse off: 25840.09 req/s, p99 15.09ms
+  reuse on:  67363.61 req/s, p99 7.96ms
+  reuse off: 26728.41 req/s, p99 14.68ms

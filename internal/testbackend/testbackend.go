@@ -14,13 +14,17 @@
 //	/slow     200 after sleeping ?ms=N milliseconds (default 5000)
 //	/bytes    200 with ?n=N bytes of a fixed pattern (see Pattern), sent with
 //	          Content-Length, or chunked with &chunked=1
+//	/stats    200 with Stats as JSON: connections accepted and open, requests
 //
 // Config.Delay and Config.FailRate apply to every endpoint, /healthz included,
-// so a backend started with FailRate 1 also fails its health checks.
+// so a backend started with FailRate 1 also fails its health checks. /stats
+// is the exception: it is for the test watching the backend, so it is never
+// delayed, failed, logged or counted.
 package testbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -101,6 +105,12 @@ type Server struct {
 	stopped  bool
 	inflight atomic.Int64
 
+	// Connection and request counts for Stats, kept by the http.Server's
+	// ConnState hook and by serve.
+	connsAccepted atomic.Int64
+	connsOpen     atomic.Int64
+	requests      atomic.Int64
+
 	mu   sync.Mutex
 	reqs []RequestRecord
 }
@@ -129,6 +139,7 @@ func New(cfg Config) (*Server, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return s.ctx },
+		ConnState:         s.connState,
 		ErrorLog:          slog.NewLogLogger(cfg.Logger.Handler(), slog.LevelWarn),
 	}
 	return s, nil
@@ -175,6 +186,35 @@ func (s *Server) enter() bool {
 	return true
 }
 
+// Stats counts what a backend has seen since it started. A proxy that
+// reuses connections shows many requests per accepted connection.
+type Stats struct {
+	ConnsAccepted int64 `json:"conns_accepted"`
+	ConnsOpen     int64 `json:"conns_open"`
+	Requests      int64 `json:"requests"`
+}
+
+// Stats returns the current counts.
+func (s *Server) Stats() Stats {
+	return Stats{ConnsAccepted: s.connsAccepted.Load(), ConnsOpen: s.connsOpen.Load(), Requests: s.requests.Load()}
+}
+
+func (s *Server) connState(_ net.Conn, st http.ConnState) {
+	switch st {
+	case http.StateNew:
+		s.connsAccepted.Add(1)
+		s.connsOpen.Add(1)
+	case http.StateClosed, http.StateHijacked:
+		s.connsOpen.Add(-1)
+	}
+}
+
+func (s *Server) stats(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(HeaderBackend, s.cfg.Name)
+	json.NewEncoder(w).Encode(s.Stats())
+}
+
 // InFlight returns the number of requests currently being handled.
 func (s *Server) InFlight() int64 { return s.inflight.Load() }
 
@@ -205,6 +245,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/bytes", s.bytes)
 	mux.HandleFunc("/", s.root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stats" {
+			s.stats(w, r)
+			return
+		}
 		if !s.enter() {
 			http.Error(w, "shutting down", http.StatusServiceUnavailable)
 			return
@@ -218,6 +262,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) serve(next http.Handler, w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	s.requests.Add(1)
 	w.Header().Set(HeaderBackend, s.cfg.Name)
 	rw := &recorder{ResponseWriter: w}
 	body := &countingReader{r: r.Body}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"io"
 	"math"
 	"net"
@@ -379,6 +380,33 @@ func waitFor(t *testing.T, cond func() bool) {
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not met within 5s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Stats counts connections and requests; /stats itself is not a request.
+func TestStats(t *testing.T) {
+	s, url, c := start(t, Config{})
+	for range 3 {
+		get(t, c, url+"/")
+	}
+	resp, body := get(t, c, url+"/stats")
+	var st Stats
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		t.Fatalf("%v: %q", err, body)
+	}
+	if resp.StatusCode != 200 || st != (Stats{ConnsAccepted: 1, ConnsOpen: 1, Requests: 3}) {
+		t.Fatalf("status %d stats %+v", resp.StatusCode, st)
+	}
+	if n := len(s.Requests()); n != 3 {
+		t.Fatalf("%d requests recorded, want 3", n)
+	}
+	c.CloseIdleConnections()
+	deadline := time.Now().Add(2 * time.Second)
+	for s.Stats().ConnsOpen != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("stats after close: %+v", s.Stats())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

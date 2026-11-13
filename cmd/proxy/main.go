@@ -30,6 +30,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/admin"
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
+	"github.com/Starscourge/tls-proxy-lb/internal/logbuf"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -196,6 +197,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	// GOMAXPROCS follows the container's CPU limit (Go 1.25 and later), so
 	// it can be checked against the limit from here.
 	logger.Info("proxy listening", "version", version, "addrs", addrs, "modes", modes,
+		"log_buffer_bytes", cfg.Log.BufferBytes,
 		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
 		"max_conns", snap.Limits.MaxConns,
 		"max_idle_per_backend", snap.Upstream.MaxIdlePerBackend, "upstream_idle_ms", snap.Upstream.IdleTimeout.Milliseconds(),
@@ -266,11 +268,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitFailed)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	out, closeLog := logOutput(os.Stdout, cfg.Log)
+	logger := slog.New(slog.NewJSONHandler(out, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := run(ctx, cfg, logger, nil); err != nil {
+	err = run(ctx, cfg, logger, nil)
+	stop()
+	if err != nil {
 		logger.Error("proxy failed", "err", err)
+	}
+	// os.Exit skips deferred calls, so the buffered log is closed here.
+	if cerr := closeLog(); cerr != nil {
+		fmt.Fprintln(os.Stderr, "proxy: log:", cerr)
+	}
+	if err != nil {
 		os.Exit(exitFailed)
 	}
+}
+
+// logOutput returns where log lines go: w through a logbuf.Writer, or w
+// itself if the config turns buffering off. The close function writes out
+// what is buffered and stops the flusher; it must be called before exit.
+func logOutput(w io.Writer, l config.Log) (io.Writer, func() error) {
+	if l.BufferBytes <= 0 {
+		return w, func() error { return nil }
+	}
+	b := logbuf.New(w, l.BufferBytes, l.FlushInterval)
+	return b, b.Close
 }

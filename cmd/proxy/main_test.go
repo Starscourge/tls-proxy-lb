@@ -207,6 +207,9 @@ func TestCheckConfigExitCodes(t *testing.T) {
 		{"missing file", []string{"-config", missing, "-check-config"}, exitFailed, "", "no such file", true},
 		{"no -config", []string{"-check-config"}, exitUsage, "", "-config is required", false},
 		{"invalid at startup", []string{"-config", bad}, exitFailed, "", "route[0].pool", true},
+		// The error is logged through the buffered log, which must be
+		// written out before the process exits.
+		{"run fails", []string{"-config", writeFile(t, busyConfig(t))}, exitFailed, `"msg":"proxy failed"`, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, stdout, stderr := runMain(t, tc.args...)
@@ -465,5 +468,46 @@ address = "127.0.0.1:0"
 	}
 	if _, err := net.DialTimeout("tcp", l.admin, time.Second); err == nil {
 		t.Fatal("admin listener still open after run returned")
+	}
+}
+
+// busyConfig returns a config whose listener address is already taken, so
+// run fails at startup.
+func busyConfig(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return fmt.Sprintf(`
+default_pool = "p"
+
+[[listener]]
+address = %q
+mode = "http"
+
+[pool.p]
+backends = [{ address = "127.0.0.1:1" }]
+`, ln.Addr().String())
+}
+
+// The buffered log is written out by its close function; with buffering
+// off, lines go straight to the output.
+func TestLogOutput(t *testing.T) {
+	var buf bytes.Buffer
+	w, closeLog := logOutput(&buf, config.Log{BufferBytes: 1 << 10, FlushInterval: time.Hour})
+	fmt.Fprintln(w, "line")
+	if buf.Len() != 0 {
+		t.Fatal("buffered line written early")
+	}
+	if err := closeLog(); err != nil || buf.String() != "line\n" {
+		t.Fatalf("after close: %q, %v", buf.String(), err)
+	}
+	buf.Reset()
+	w, closeLog = logOutput(&buf, config.Log{})
+	fmt.Fprintln(w, "line")
+	if buf.String() != "line\n" || closeLog() != nil {
+		t.Fatalf("unbuffered: %q", buf.String())
 	}
 }

@@ -6,7 +6,8 @@ COMPOSE   := docker compose -f lab/docker-compose.yml
 UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
-        check-config lab-up lab-down lab-check netem-check wrk-race bench-lb testssl clean
+        check-config lab-up lab-down lab-check netem-check wrk-race bench-lb testssl \
+        bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile clean
 
 all: build test lint
 
@@ -72,6 +73,18 @@ bench-lb:
 # Phase 3 "Done when": testssl.sh against the lab proxy, report in docs/.
 testssl:
 	bench/phase3/testssl.sh
+
+# Phase 4 "Done when" items; results in bench/phase4/results/.
+bench-allocs:            # allocations per request (LABEL=after by default)
+	bench/phase4/allocs.sh $(or $(LABEL),after)
+bench-reuse:             # wrk with reuse off and on, new upstream connections per second
+	bench/phase4/reuse.sh
+wrk-race-reuse:          # wrk GET and POST /echo against a -race build, reuse on
+	bench/phase4/wrk-race.sh
+bench-scaling:           # throughput at GOMAXPROCS 1, 2 and 4
+	bench/phase4/scaling.sh
+bench-profile:           # mutex, block and CPU profiles under load
+	bench/phase4/profile.sh
 
 clean:
 	rm -rf $(BIN)

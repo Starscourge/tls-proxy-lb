@@ -67,3 +67,19 @@ upstream_connect_ms  = 1000
 upstream_response_ms = 10000
 idle_ms              = 60000
 client_io_ms         = 60000
+
+# Health checks: active checks every second, and passive ejection after
+# three failures in a row in live traffic, for five seconds.
+[health]
+path             = "/healthz"
+interval_ms      = 1000
+timeout_ms       = 500
+rise             = 2
+fall             = 3
+passive_failures = 3
+eject_ms         = 5000
+
+# /metrics, /status and pprof, on loopback inside the proxy container.
+# Prometheus shares the container's network namespace to scrape it.
+[admin]
+address = "127.0.0.1:9901"

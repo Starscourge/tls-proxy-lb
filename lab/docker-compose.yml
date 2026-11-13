@@ -9,6 +9,10 @@
 #   docker compose -f lab/docker-compose.yml exec backend1 tc qdisc add dev eth0 root netem delay 100ms
 #
 # Backends have NET_ADMIN so tc/netem can shape their traffic.
+#
+# Prometheus shares the proxy container's network namespace and scrapes
+# its loopback-only admin listener. Its UI is at 10.0.0.10:9090 inside the
+# lab network.
 name: tlslab
 
 x-backend: &backend
@@ -79,6 +83,26 @@ services:
     networks:
       lab:
         ipv4_address: 10.0.0.13
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    # The proxy's admin listener binds loopback only; sharing the proxy's
+    # network namespace is how Prometheus reaches it without opening it up.
+    network_mode: "service:proxy"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+      - --web.listen-address=:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+      start_period: 2s
+    depends_on:
+      proxy: {condition: service_healthy}
 
   loadgen:
     build:

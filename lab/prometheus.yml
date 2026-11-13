@@ -1,0 +1,11 @@
+# Prometheus for the lab. It runs in the proxy container's network
+# namespace (network_mode: service:proxy), so it reaches the admin
+# listener on 127.0.0.1, which is the only address the proxy lets it bind.
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: proxy
+    static_configs:
+      - targets: ["127.0.0.1:9901"]

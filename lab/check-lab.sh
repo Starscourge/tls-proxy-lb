@@ -2,8 +2,8 @@
 # Lab checks. Brings the lab up (creating certificates if there are none),
 # checks each backend answers from the load generator with its own name,
 # checks the proxy's config, that its GOMAXPROCS matches the container's CPU
-# limit, its TLS routing and its redirect listener (lab/proxy.toml), then
-# checks netem on backend1.
+# limit, its TLS routing and its redirect listener (lab/proxy.toml), that
+# Prometheus scrapes it, then checks netem on backend1.
 #
 # Usage: lab/check-lab.sh [--no-up]
 set -euo pipefail
@@ -22,7 +22,7 @@ fi
 
 echo "== services"
 "${compose[@]}" ps --format '{{.Service}} {{.State}} {{.Health}}'
-for svc in proxy backend1 backend2 backend3 loadgen; do
+for svc in proxy backend1 backend2 backend3 loadgen prometheus; do
   state="$("${compose[@]}" ps --format '{{.State}}' "$svc")"
   [[ "$state" == running ]] || { echo "FAIL: $svc is '$state', want running" >&2; exit 1; }
 done
@@ -106,5 +106,7 @@ location="$("${compose[@]}" exec -T loadgen \
   curl -sS -o /dev/null --max-time 5 -H 'Host: a.test' -w '%{http_code} %{redirect_url}' "http://10.0.0.10:8080/x?y=1")"
 [[ "$location" == "308 https://a.test:8443/x?y=1" ]] || { echo "FAIL: redirect answered '$location'" >&2; exit 1; }
 echo "ok: http://a.test:8080/x?y=1 -> $location"
+
+"$here/prometheus-check.sh"
 
 exec "$here/netem-check.sh"

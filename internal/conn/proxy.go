@@ -488,8 +488,9 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	if reqBody != nil {
 		rec.bytesIn = reqBody.N()
 	}
-	var ce clientError
-	upstreamBodyFailed := respBody != nil && respBody.Err() != nil && !errors.As(respBody.Err(), &ce)
+	// Short-circuited, so the success path does not call isClientErr,
+	// whose errors.As target escapes to the heap.
+	upstreamBodyFailed := respBody != nil && respBody.Err() != nil && !isClientErr(respBody.Err())
 	switch {
 	case upstreamBodyFailed || resp.StatusCode >= 500:
 		cc.reportFailure(ctx, b)
@@ -535,8 +536,14 @@ func (cc *clientConn) reportFailure(ctx context.Context, b *lb.Backend) {
 // because of the client: its body broke off, or relaying a 1xx to it
 // failed.
 func clientFailed(reqBody *httpx.Body, readErr error) bool {
+	return clientBodyFailed(reqBody) || isClientErr(readErr)
+}
+
+// isClientErr reports whether err is, or wraps, a failure writing to the
+// client.
+func isClientErr(err error) bool {
 	var ce clientError
-	return clientBodyFailed(reqBody) || errors.As(readErr, &ce)
+	return errors.As(err, &ce)
 }
 
 // retryElsewhere reports whether a request whose attempt failed before a

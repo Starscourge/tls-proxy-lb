@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
+	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -104,7 +106,9 @@ func serveBench(c net.Conn) {
 	}
 }
 
-// benchProxy runs a proxy in front of backend with reuse on or off.
+// benchProxy runs a proxy in front of backend with reuse on or off, wired
+// like cmd/proxy: a health checker (active checks off, so no probe
+// requests reach the benchmark's backend; passive checks on) and metrics.
 func benchProxy(b *testing.B, backend string, reuse bool) string {
 	b.Helper()
 	c, err := config.Parse("bench.toml", fmt.Appendf(nil,
@@ -116,13 +120,17 @@ func benchProxy(b *testing.B, backend string, reuse bool) string {
 	if !reuse {
 		c.Upstream.MaxIdlePerBackend = 0
 	}
+	c.Health.Interval = 0
 	reg := upstream.NewRegistry(c.Upstream.Options())
 	b.Cleanup(reg.Close)
-	snap, err := config.NewSnapshot(c, config.Runtime{Conns: reg})
+	chk := health.NewChecker(health.Config{Options: c.Health})
+	b.Cleanup(chk.Close)
+	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk})
+	snap, err := config.NewSnapshot(c, config.Runtime{Conns: reg, Health: chk, Metrics: m})
 	if err != nil {
 		b.Fatal(err)
 	}
-	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), Metrics: m}
 	s := NewServer(0, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

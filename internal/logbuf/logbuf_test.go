@@ -38,21 +38,28 @@ func (s *sink) got() []string {
 }
 
 // Lines wait in the buffer until it would overflow, then go out in one
-// write; a line bigger than the buffer goes straight through.
+// write; a line bigger than the buffer goes out on its own.
 func TestWriterBuffers(t *testing.T) {
 	s := &sink{}
 	w := New(s, 10, time.Hour)
-	defer w.Close()
 	w.Write([]byte("aaaa\n"))
 	w.Write([]byte("bbbb\n"))
+	time.Sleep(20 * time.Millisecond)
 	if got := s.got(); len(got) != 0 {
+		w.Close()
 		t.Fatalf("written before the buffer filled: %q", got)
 	}
 	w.Write([]byte("cc\n"))
 	w.Write([]byte(strings.Repeat("x", 20) + "\n"))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"aaaa\nbbbb\n", "cc\n", strings.Repeat("x", 20) + "\n"}
 	if got := s.got(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("writes %q, want %q", got, want)
+	}
+	if _, err := w.Write([]byte("late")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Write after Close: %v", err)
 	}
 }
 
@@ -86,18 +93,26 @@ func TestWriterClose(t *testing.T) {
 	}
 }
 
-// After the underlying writer fails, writes report its error.
+// After the underlying writer fails, writes report its error, and so does
+// Close.
 func TestWriterError(t *testing.T) {
 	boom := errors.New("disk full")
 	s := &sink{err: boom}
 	w := New(s, 8, time.Hour)
-	defer w.Close()
 	w.Write([]byte("12345"))
-	if _, err := w.Write([]byte("67890")); !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want %v", err, boom)
+	w.Write([]byte("67890")) // hands 12345 to the flusher, which fails
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := w.Write([]byte("x")); errors.Is(err, boom) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("write error never reported")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if _, err := w.Write([]byte("x")); !errors.Is(err, boom) {
-		t.Fatalf("later write: err = %v", err)
+	if err := w.Close(); !errors.Is(err, boom) {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
@@ -129,9 +144,10 @@ func TestWriterConcurrent(t *testing.T) {
 	}
 }
 
-// A slow flush does not hold up writers: they fill the spare buffer while
-// the full one is being written, and flushes stay in order.
-func TestWriterWritesOutsideTheLock(t *testing.T) {
+// Write never waits on the output while a buffer is free: with the
+// flusher stuck in a slow write, writers fill the second buffer, and only
+// a write that needs a third waits.
+func TestWriterDoesNotWaitOnOutput(t *testing.T) {
 	release := make(chan struct{})
 	var mu sync.Mutex
 	var out []string
@@ -150,23 +166,32 @@ func TestWriterWritesOutsideTheLock(t *testing.T) {
 		return len(p), nil
 	})
 	w := New(slow, 8, time.Hour)
-	w.Write([]byte("aaaa"))
-	w.Write([]byte("bbbb"))
-	done := make(chan struct{})
-	go func() { w.Write([]byte("cccc")); close(done) }() // flushes aaaabbbb, blocks in w
-	time.Sleep(20 * time.Millisecond)
-	// This write lands in the spare buffer without waiting for the flush.
-	wrote := make(chan struct{})
-	go func() { w.Write([]byte("d")); close(wrote) }()
+	returns := func(p string) chan struct{} {
+		ch := make(chan struct{})
+		go func() { w.Write([]byte(p)); close(ch) }()
+		return ch
+	}
+	prompt := func(what string, ch chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("%s waited on the output", what)
+		}
+	}
+	prompt("first buffer", returns("aaaabbbb"))
+	prompt("hand-off", returns("cccc")) // flusher now stuck writing aaaabbbb
+	prompt("second buffer", returns("d"))
+	third := returns("eeee") // needs a third buffer: waits
 	select {
-	case <-wrote:
-	case <-time.After(time.Second):
-		t.Fatal("Write waited for a flush in progress")
+	case <-third:
+		t.Fatal("Write did not wait with both buffers taken")
+	case <-time.After(50 * time.Millisecond):
 	}
 	close(release)
-	<-done
+	prompt("after the flush", third)
 	w.Close()
-	if got := strings.Join(out, "|"); got != "aaaabbbb|ccccd" && got != "aaaabbbb|dcccc" {
+	if got := strings.Join(out, "|"); got != "aaaabbbb|ccccd|eeee" {
 		t.Fatalf("writes %q", got)
 	}
 }

@@ -4,62 +4,74 @@
 // slog's handlers hold a mutex around each Write to their output. With an
 // unbuffered file that Write is a system call per log line, made with the
 // lock held, and every connection goroutine queues behind it: under load it
-// was the most contended lock in the proxy. Through a Writer the lock
-// covers a copy into memory; the system call happens once per buffer, or
-// once per flush interval when traffic is light.
+// was the most contended lock in the proxy. Through a Writer, Write is a
+// copy into memory and never does I/O; a goroutine of the Writer's own
+// writes full buffers out, so slog's lock is never held across a system
+// call.
 //
 // The cost is durability: lines still in the buffer when the process dies
 // without Close are lost, up to one flush interval's worth.
 package logbuf
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"time"
 )
 
-// Writer buffers writes to an underlying writer. It is safe for
-// concurrent use. Writes are kept whole: a buffer is flushed before a write
-// that would not fit, and a write larger than the buffer goes straight
-// through.
+// ErrClosed is returned by Write after Close.
+var ErrClosed = errors.New("logbuf: writer closed")
+
+// Writer buffers writes to an underlying writer. It is safe for concurrent
+// use, and keeps every Write whole and in order.
 //
-// A full buffer is swapped for a spare under mu and written out under wmu
-// alone, so writers keep appending while a flush is in its system call.
-// Taking wmu before letting go of mu keeps flushes in buffer order; a
-// writer waits on wmu with mu held only if a buffer fills while the
-// previous one is still being written.
+// There are two buffers. Writers append to one; when it would overflow it
+// is handed to the flusher goroutine and the other takes its place. A
+// writer waits only if that one fills too before the flusher has finished,
+// which is backpressure from a slow output. A Write larger than a buffer is
+// copied and handed over on its own.
 //
-// Goroutines: one flusher, started by New and stopped by Close.
+// Goroutines: one flusher, started by New and stopped by Close. It also
+// writes out a partly full buffer every interval.
 type Writer struct {
-	mu    sync.Mutex // guards buf, spare and err
-	buf   []byte
-	spare []byte
-	err   error // first error from w; later writes are dropped
+	w    io.Writer
+	size int
 
-	wmu sync.Mutex // serialises writes to w, in buffer order
-	w   io.Writer
+	mu      sync.Mutex
+	cond    sync.Cond // signalled when the flusher finishes a write
+	buf     []byte    // being filled
+	spare   []byte    // nil while the flusher holds the other buffer
+	pending []byte    // handed over and not yet written; nil if none
+	err     error     // first error from w; later writes fail with it
+	closed  bool
 
+	kick chan struct{}
 	stop chan struct{}
 	done chan struct{}
 	once sync.Once
 }
 
-// New returns a Writer with a buffer of size bytes that writes to w when
-// the buffer fills and at least every interval. Close must be called to
+// New returns a Writer with two buffers of size bytes that writes to w
+// when a buffer fills and at least every interval. Close must be called to
 // stop its flusher and write what is left.
 func New(w io.Writer, size int, interval time.Duration) *Writer {
 	b := &Writer{
 		w:     w,
+		size:  size,
 		buf:   make([]byte, 0, size),
 		spare: make([]byte, 0, size),
+		kick:  make(chan struct{}, 1),
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
+	b.cond.L = &b.mu
 	go b.flusher(interval)
 	return b
 }
 
-// Write buffers p. It reports the error of an earlier flush, if any.
+// Write buffers p. It fails with the error of an earlier write to the
+// underlying writer, if any, or ErrClosed.
 func (b *Writer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -67,69 +79,51 @@ func (b *Writer) Write(p []byte) (int, error) {
 		if b.err != nil {
 			return 0, b.err
 		}
-		if len(b.buf)+len(p) <= cap(b.buf) {
+		if b.closed {
+			return 0, ErrClosed
+		}
+		if len(b.buf)+len(p) <= b.size {
 			b.buf = append(b.buf, p...)
 			return len(p), nil
 		}
-		if len(p) > cap(b.buf) {
-			if err := b.writeOutLocked(p); err != nil {
-				return 0, err
-			}
-			return len(p), nil
+		if b.pending != nil || b.spare == nil {
+			// Both buffers are taken: wait for the flusher.
+			b.cond.Wait()
+			continue
 		}
-		// Others may fill the new buffer while this one is written, so
-		// check again.
-		b.writeOutLocked(nil)
+		if len(b.buf) > 0 {
+			b.handOffLocked()
+			continue
+		}
+		// Empty buffer and p still does not fit: p goes on its own.
+		b.pending = append([]byte(nil), p...)
+		b.signal()
+		return len(p), nil
 	}
 }
 
-// Flush writes out whatever is buffered.
-func (b *Writer) Flush() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.err != nil || len(b.buf) == 0 {
-		return b.err
-	}
-	return b.writeOutLocked(nil)
+// handOffLocked gives the current buffer to the flusher and starts filling
+// the spare. mu must be held, pending empty and spare present.
+func (b *Writer) handOffLocked() {
+	b.pending, b.buf, b.spare = b.buf, b.spare, nil
+	b.signal()
 }
 
-// writeOutLocked writes the buffer, then extra if non-nil, to w. It is
-// called with mu held and returns with it held, but drops it for the
-// write itself.
-func (b *Writer) writeOutLocked(extra []byte) error {
-	full := b.buf
-	if b.spare != nil {
-		b.buf, b.spare = b.spare, nil
-	} else {
-		b.buf = make([]byte, 0, cap(full))
+func (b *Writer) signal() {
+	select {
+	case b.kick <- struct{}{}:
+	default:
 	}
-	b.wmu.Lock()
-	b.mu.Unlock()
-	var err error
-	if len(full) > 0 {
-		_, err = b.w.Write(full)
-	}
-	if err == nil && extra != nil {
-		_, err = b.w.Write(extra)
-	}
-	b.wmu.Unlock()
-	b.mu.Lock()
-	if b.spare == nil {
-		b.spare = full[:0]
-	}
-	if err != nil && b.err == nil {
-		b.err = err
-	}
-	return err
 }
 
-// Close stops the flusher and writes out what is buffered. Writes after
-// Close are buffered but only written by an explicit Flush. Calling it
-// again just flushes.
+// Close stops the flusher once it has written everything buffered, and
+// returns the first write error, if any. Calling it again returns the same.
 func (b *Writer) Close() error {
 	b.once.Do(func() { close(b.stop) })
 	<-b.done
-	return b.Flush()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err
 }
 
 func (b *Writer) flusher(interval time.Duration) {
@@ -137,11 +131,58 @@ func (b *Writer) flusher(interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		var stopping bool
 		select {
-		case <-b.stop:
-			return
+		case <-b.kick:
 		case <-t.C:
-			_ = b.Flush()
+			b.mu.Lock()
+			if b.pending == nil && b.spare != nil && len(b.buf) > 0 {
+				b.handOffLocked()
+			}
+			b.mu.Unlock()
+		case <-b.stop:
+			stopping = true
+		}
+		b.writePending()
+		if stopping {
+			b.mu.Lock()
+			b.closed = true
+			if len(b.buf) > 0 && b.err == nil {
+				b.pending, b.buf = b.buf, nil
+			}
+			b.mu.Unlock()
+			b.writePending()
+			b.mu.Lock()
+			b.cond.Broadcast() // wake writers waiting on a full buffer
+			b.mu.Unlock()
+			return
 		}
 	}
+}
+
+// writePending writes the handed-over buffer, if there is one, and makes
+// it the spare again.
+func (b *Writer) writePending() {
+	b.mu.Lock()
+	p := b.pending
+	if p == nil {
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+
+	_, err := b.w.Write(p)
+
+	b.mu.Lock()
+	b.pending = nil
+	if b.spare == nil && cap(p) == b.size {
+		b.spare = p[:0]
+	} else if b.spare == nil {
+		b.spare = make([]byte, 0, b.size)
+	}
+	if err != nil && b.err == nil {
+		b.err = err
+	}
+	b.cond.Broadcast()
+	b.mu.Unlock()
 }

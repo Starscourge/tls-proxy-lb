@@ -29,6 +29,12 @@ type file struct {
 	Limits      fileLimits          `toml:"limits"`
 	Upstream    fileUpstream        `toml:"upstream"`
 	Admin       fileAdmin           `toml:"admin"`
+	Log         fileLog             `toml:"log"`
+}
+
+type fileLog struct {
+	BufferBytes int64 `toml:"buffer_bytes"`
+	FlushMS     int64 `toml:"flush_ms"`
 }
 
 type fileUpstream struct {
@@ -91,6 +97,8 @@ const (
 	maxMaxHeaderBytes = 16 << 20
 	maxMaxIdle        = 100_000
 	maxProfileRate    = 1_000_000_000
+	maxLogBuffer      = 16 << 20
+	maxLogFlushMS     = 60_000
 )
 
 // hashKeyClientIP and hashKeyHeaderPrefix are the forms of hash_key.
@@ -165,6 +173,7 @@ func (v *validator) config(f *file) *Config {
 		Limits:   v.limits(&f.Limits),
 		Upstream: v.upstream(&f.Upstream),
 		Admin:    v.admin(&f.Admin),
+		Log:      v.log(&f.Log),
 	}
 	c.Listeners = v.listeners(f.Listeners)
 	c.TLS = v.tls(&f.TLS)
@@ -454,6 +463,25 @@ func (v *validator) upstream(fu *fileUpstream) Upstream {
 		}
 	}
 	return u
+}
+
+func (v *validator) log(fl *fileLog) Log {
+	l := DefaultLog()
+	if v.md.IsDefined("log", "buffer_bytes") {
+		if n := fl.BufferBytes; n < 0 || n > maxLogBuffer {
+			v.errorf("log.buffer_bytes", "must be from 0 to %d, got %d", maxLogBuffer, n)
+		} else {
+			l.BufferBytes = int(n)
+		}
+	}
+	if v.md.IsDefined("log", "flush_ms") {
+		if ms := fl.FlushMS; ms <= 0 || ms > maxLogFlushMS {
+			v.errorf("log.flush_ms", "must be from 1 to %d milliseconds, got %d", maxLogFlushMS, ms)
+		} else {
+			l.FlushInterval = time.Duration(ms) * time.Millisecond
+		}
+	}
+	return l
 }
 
 // admin validates the [admin] table. The listener serves pprof, which

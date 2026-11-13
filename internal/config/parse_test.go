@@ -80,6 +80,10 @@ idle_timeout_ms      = 9000
 address                = "127.0.0.1:9090"
 mutex_profile_fraction = 100
 block_profile_rate_ns  = 10000
+
+[log]
+buffer_bytes = 0
+flush_ms     = 250
 `
 
 func TestParseFull(t *testing.T) {
@@ -116,6 +120,7 @@ func TestParseFull(t *testing.T) {
 		Limits:   Limits{MaxConns: 500, MaxHeaderBytes: 8192},
 		Upstream: Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second},
 		Admin:    Admin{Address: "127.0.0.1:9090", MutexProfileFraction: 100, BlockProfileRate: 10000},
+		Log:      Log{BufferBytes: 0, FlushInterval: 250 * time.Millisecond},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got\n%+v\nwant\n%+v", c, want)
@@ -140,8 +145,8 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) {
-		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin)
+	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) || c.Log != DefaultLog() {
+		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v log %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin, c.Log)
 	}
 	// max_idle_per_backend = 0 turns reuse off; admin may bind ::1 or
 	// localhost, port 0 included.
@@ -262,6 +267,8 @@ func TestParseRejects(t *testing.T) {
 		{"admin hostname", base + route + pool + "[admin]\naddress = \"proxy:9090\"\n", `admin.address: "proxy:9090": host must be a loopback address`},
 		{"admin no port", base + route + pool + "[admin]\naddress = \"127.0.0.1\"\n", `admin.address: "127.0.0.1" is not host:port`},
 		{"admin negative rate", base + route + pool + "[admin]\naddress = \"127.0.0.1:0\"\nblock_profile_rate_ns = -1\n", "admin.block_profile_rate_ns: must be from 0 to 1000000000, got -1"},
+		{"log buffer negative", base + route + pool + "[log]\nbuffer_bytes = -1\n", "log.buffer_bytes: must be from 0 to 16777216, got -1"},
+		{"log flush zero", base + route + pool + "[log]\nflush_ms = 0\n", "log.flush_ms: must be from 1 to 60000 milliseconds, got 0"},
 		{"listener mode", "[[listener]]\naddress = \":80\"\nmode = \"tls\"\n" + route + pool, `listener[0].mode: "tls" is not one of https, http, redirect`},
 		{"redirect_port without redirect", "[[listener]]\naddress = \":80\"\nmode = \"http\"\nredirect_port = 443\n" + route + pool, `listener[0].redirect_port: is only valid with mode = "redirect"`},
 		{"redirect_port zero", "[[listener]]\naddress = \":80\"\nmode = \"redirect\"\nredirect_port = 0\n" + route + pool, "listener[0].redirect_port: must be from 1 to 65535, got 0"},

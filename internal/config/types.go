@@ -26,6 +26,7 @@ type Config struct {
 	Limits   Limits
 	Upstream Upstream
 	Admin    Admin
+	Log      Log
 }
 
 // Listener modes.
@@ -189,4 +190,20 @@ type Admin struct {
 	// blocking event is sampled per this many nanoseconds spent blocked.
 	// Zero leaves block profiling off.
 	BlockProfileRate int
+}
+
+// Log controls how log lines reach stdout. It applies from startup and is
+// not reloaded.
+type Log struct {
+	// BufferBytes is the size of the buffer log lines collect in before a
+	// write to stdout. Zero writes every line as it is logged.
+	BufferBytes int
+	// FlushInterval is the longest a line waits in the buffer, and so the
+	// most a crash can lose.
+	FlushInterval time.Duration
+}
+
+// DefaultLog returns the log settings used when the file sets none.
+func DefaultLog() Log {
+	return Log{BufferBytes: 64 << 10, FlushInterval: time.Second}
 }

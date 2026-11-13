@@ -27,6 +27,19 @@ type file struct {
 	TLS         fileTLS             `toml:"tls"`
 	Timeouts    fileTimeouts        `toml:"timeouts"`
 	Limits      fileLimits          `toml:"limits"`
+	Upstream    fileUpstream        `toml:"upstream"`
+	Admin       fileAdmin           `toml:"admin"`
+}
+
+type fileUpstream struct {
+	MaxIdlePerBackend int64 `toml:"max_idle_per_backend"`
+	IdleTimeoutMS     int64 `toml:"idle_timeout_ms"`
+}
+
+type fileAdmin struct {
+	Address              string `toml:"address"`
+	MutexProfileFraction int64  `toml:"mutex_profile_fraction"`
+	BlockProfileRateNS   int64  `toml:"block_profile_rate_ns"`
 }
 
 type fileListener struct {
@@ -76,6 +89,8 @@ const (
 	maxTimeoutMS      = 24 * 60 * 60 * 1000 // a day
 	maxMaxConns       = 10_000_000
 	maxMaxHeaderBytes = 16 << 20
+	maxMaxIdle        = 100_000
+	maxProfileRate    = 1_000_000_000
 )
 
 // hashKeyClientIP and hashKeyHeaderPrefix are the forms of hash_key.
@@ -148,6 +163,8 @@ func (v *validator) config(f *file) *Config {
 		Source:   v.file,
 		Timeouts: v.timeouts(&f.Timeouts),
 		Limits:   v.limits(&f.Limits),
+		Upstream: v.upstream(&f.Upstream),
+		Admin:    v.admin(&f.Admin),
 	}
 	c.Listeners = v.listeners(f.Listeners)
 	c.TLS = v.tls(&f.TLS)
@@ -418,6 +435,71 @@ func (v *validator) limits(fl *fileLimits) Limits {
 		*f.dst = int(f.n)
 	}
 	return l
+}
+
+func (v *validator) upstream(fu *fileUpstream) Upstream {
+	u := DefaultUpstream()
+	if v.md.IsDefined("upstream", "max_idle_per_backend") {
+		if n := fu.MaxIdlePerBackend; n < 0 || n > maxMaxIdle {
+			v.errorf("upstream.max_idle_per_backend", "must be from 0 to %d, got %d", maxMaxIdle, n)
+		} else {
+			u.MaxIdlePerBackend = int(n)
+		}
+	}
+	if v.md.IsDefined("upstream", "idle_timeout_ms") {
+		if ms := fu.IdleTimeoutMS; ms <= 0 || ms > maxTimeoutMS {
+			v.errorf("upstream.idle_timeout_ms", "must be from 1 to %d milliseconds, got %d", maxTimeoutMS, ms)
+		} else {
+			u.IdleTimeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+	return u
+}
+
+// admin validates the [admin] table. The listener serves pprof, which
+// exposes memory contents, so it may only bind a loopback address.
+func (v *validator) admin(fa *fileAdmin) Admin {
+	a := Admin{Address: fa.Address}
+	if v.md.IsDefined("admin", "address") {
+		if err := checkLoopback(fa.Address); err != nil {
+			v.errorf("admin.address", "%v", err)
+			a.Address = ""
+		}
+	}
+	for _, f := range []struct {
+		key string
+		n   int64
+		dst *int
+	}{
+		{"mutex_profile_fraction", fa.MutexProfileFraction, &a.MutexProfileFraction},
+		{"block_profile_rate_ns", fa.BlockProfileRateNS, &a.BlockProfileRate},
+	} {
+		if !v.md.IsDefined("admin", f.key) {
+			continue
+		}
+		if f.n < 0 || f.n > maxProfileRate {
+			v.errorf("admin."+f.key, "must be from 0 to %d, got %d", maxProfileRate, f.n)
+			continue
+		}
+		*f.dst = int(f.n)
+	}
+	return a
+}
+
+// checkLoopback checks that addr is host:port with a loopback IP or
+// "localhost" as the host. Port 0 picks a free port.
+func checkLoopback(addr string) error {
+	if err := checkHostPort(addr, true); err != nil {
+		return err
+	}
+	host, _, _ := net.SplitHostPort(addr)
+	if host == "localhost" {
+		return nil
+	}
+	if a, err := netip.ParseAddr(host); err == nil && a.Unmap().IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("%q: host must be a loopback address such as 127.0.0.1, ::1 or localhost", addr)
 }
 
 func algorithmList() string {

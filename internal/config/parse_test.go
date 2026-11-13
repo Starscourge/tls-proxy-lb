@@ -71,6 +71,15 @@ client_io_ms         = 15000
 [limits]
 max_conns        = 500
 max_header_bytes = 8192
+
+[upstream]
+max_idle_per_backend = 16
+idle_timeout_ms      = 9000
+
+[admin]
+address                = "127.0.0.1:9090"
+mutex_profile_fraction = 100
+block_profile_rate_ns  = 10000
 `
 
 func TestParseFull(t *testing.T) {
@@ -104,7 +113,9 @@ func TestParseFull(t *testing.T) {
 			UpstreamConnect:  300 * time.Millisecond,
 			UpstreamResponse: 4 * time.Second,
 		},
-		Limits: Limits{MaxConns: 500, MaxHeaderBytes: 8192},
+		Limits:   Limits{MaxConns: 500, MaxHeaderBytes: 8192},
+		Upstream: Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second},
+		Admin:    Admin{Address: "127.0.0.1:9090", MutexProfileFraction: 100, BlockProfileRate: 10000},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got\n%+v\nwant\n%+v", c, want)
@@ -129,8 +140,19 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() {
-		t.Fatalf("timeouts %+v limits %+v, want defaults", c.Timeouts, c.Limits)
+	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) {
+		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin)
+	}
+	// max_idle_per_backend = 0 turns reuse off; admin may bind ::1 or
+	// localhost, port 0 included.
+	for _, extra := range []string{
+		"[upstream]\nmax_idle_per_backend = 0\n",
+		"[admin]\naddress = \"[::1]:0\"\n",
+		"[admin]\naddress = \"localhost:6060\"\n",
+	} {
+		if _, err := Parse("ok.toml", []byte(minimal+extra)); err != nil {
+			t.Fatalf("%s: %v", extra, err)
+		}
 	}
 	if c.Pools[0].Algorithm != lb.RoundRobin || c.DefaultPool != "" {
 		t.Fatalf("pool %+v default %q", c.Pools[0], c.DefaultPool)
@@ -232,6 +254,14 @@ func TestParseRejects(t *testing.T) {
 		{"max_conns zero", base + route + pool + "[limits]\nmax_conns = 0\n", "limits.max_conns: must be from 1 to 10000000, got 0"},
 		{"max_header_bytes huge", base + route + pool + "[limits]\nmax_header_bytes = 1073741824\n", "limits.max_header_bytes: must be from 1 to 16777216"},
 		{"handshake zero", base + route + pool + "[timeouts]\nhandshake_ms = 0\n", "timeouts.handshake_ms: must be from 1"},
+		{"max_idle negative", base + route + pool + "[upstream]\nmax_idle_per_backend = -1\n", "upstream.max_idle_per_backend: must be from 0 to 100000, got -1"},
+		{"upstream idle zero", base + route + pool + "[upstream]\nidle_timeout_ms = 0\n", "upstream.idle_timeout_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"unknown upstream key", base + route + pool + "[upstream]\nmax_idle = 5\n", "upstream.max_idle: unknown field"},
+		{"admin public", base + route + pool + "[admin]\naddress = \"0.0.0.0:9090\"\n", `admin.address: "0.0.0.0:9090": host must be a loopback address`},
+		{"admin all interfaces", base + route + pool + "[admin]\naddress = \":9090\"\n", `admin.address: ":9090": host must be a loopback address`},
+		{"admin hostname", base + route + pool + "[admin]\naddress = \"proxy:9090\"\n", `admin.address: "proxy:9090": host must be a loopback address`},
+		{"admin no port", base + route + pool + "[admin]\naddress = \"127.0.0.1\"\n", `admin.address: "127.0.0.1" is not host:port`},
+		{"admin negative rate", base + route + pool + "[admin]\naddress = \"127.0.0.1:0\"\nblock_profile_rate_ns = -1\n", "admin.block_profile_rate_ns: must be from 0 to 1000000000, got -1"},
 		{"listener mode", "[[listener]]\naddress = \":80\"\nmode = \"tls\"\n" + route + pool, `listener[0].mode: "tls" is not one of https, http, redirect`},
 		{"redirect_port without redirect", "[[listener]]\naddress = \":80\"\nmode = \"http\"\nredirect_port = 443\n" + route + pool, `listener[0].redirect_port: is only valid with mode = "redirect"`},
 		{"redirect_port zero", "[[listener]]\naddress = \":80\"\nmode = \"redirect\"\nredirect_port = 0\n" + route + pool, "listener[0].redirect_port: must be from 1 to 65535, got 0"},

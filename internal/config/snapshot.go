@@ -21,11 +21,13 @@ import (
 // The pools' own atomic state (in-flight counters, rotation counters) is
 // the only part that moves, and it belongs to the pools, not the snapshot.
 type Snapshot struct {
-	// Listeners, Timeouts and Limits are copied from the Config. Callers
-	// must not modify Listeners.
+	// Listeners, Timeouts, Limits, Upstream and Admin are copied from the
+	// Config. Callers must not modify Listeners.
 	Listeners []Listener
 	Timeouts  Timeouts
 	Limits    Limits
+	Upstream  Upstream
+	Admin     Admin
 	// Certs are the route and default certificates, read by every TLS
 	// handshake through tlsx.ServerConfig.
 	Certs *tlsx.CertSet
@@ -49,6 +51,8 @@ func NewSnapshot(c *Config) (*Snapshot, error) {
 		Listeners: append([]Listener(nil), c.Listeners...),
 		Timeouts:  c.Timeouts,
 		Limits:    c.Limits,
+		Upstream:  c.Upstream,
+		Admin:     c.Admin,
 		pools:     make(map[string]*lb.Pool, len(c.Pools)),
 		routes:    make(map[string]*lb.Pool, len(c.Routes)),
 	}

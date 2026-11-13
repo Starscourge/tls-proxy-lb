@@ -23,6 +23,8 @@ type Config struct {
 	TLS      TLS
 	Timeouts Timeouts
 	Limits   Limits
+	Upstream Upstream
+	Admin    Admin
 }
 
 // Listener modes.
@@ -149,4 +151,36 @@ type Limits struct {
 // DefaultLimits returns the limits used when the file sets none.
 func DefaultLimits() Limits {
 	return Limits{MaxConns: 10000, MaxHeaderBytes: 64 << 10}
+}
+
+// Upstream controls the keep-alive pool of connections to backends.
+type Upstream struct {
+	// MaxIdlePerBackend is the most idle connections kept open to one
+	// backend address. Zero turns reuse off: every request gets a new
+	// connection and asks the backend to close it.
+	MaxIdlePerBackend int
+	// IdleTimeout is how long an idle connection may wait for its next
+	// request before it is closed. It should be shorter than the backends'
+	// own keep-alive timeouts, so the proxy is usually the side to close.
+	IdleTimeout time.Duration
+}
+
+// DefaultUpstream returns the pool settings used when the file sets none.
+func DefaultUpstream() Upstream {
+	return Upstream{MaxIdlePerBackend: 100, IdleTimeout: 30 * time.Second}
+}
+
+// Admin configures the admin listener, which serves pprof. It applies from
+// startup and is not reloaded.
+type Admin struct {
+	// Address is a loopback host:port. Empty means no admin listener.
+	Address string
+	// MutexProfileFraction is passed to runtime.SetMutexProfileFraction:
+	// on average 1 in this many mutex contention events is sampled. Zero
+	// leaves mutex profiling off.
+	MutexProfileFraction int
+	// BlockProfileRate is passed to runtime.SetBlockProfileRate: one
+	// blocking event is sampled per this many nanoseconds spent blocked.
+	// Zero leaves block profiling off.
+	BlockProfileRate int
 }

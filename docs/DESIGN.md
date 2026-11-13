@@ -715,3 +715,229 @@ On the development machine (WSL2, `-race`): the 1 GB slow-reader test
 reads at 44 MB/s over HTTPS (92 MB/s plain) with heap growth of 2.3 MiB
 (0.3 MiB plain), from TLS record buffers per connection. 200 keep-alive
 HTTPS clients return goroutines and fds to baseline (5 → 214 → 5, 9 → 9).
+
+## Phase 4: Upstream connection reuse and concurrency
+
+### One idle pool per backend address, shared across lb pools
+
+`upstream.Registry` holds one `upstream.Pool` per backend address, and
+`config.NewSnapshot` gives each `lb.Backend` the pool for its address.
+`lb.Backend` objects stay per lb pool (Phase 2: each pool has its own
+in-flight counters); only connections are shared, because a TCP
+connection to `10.0.0.11:8000` can carry any request for that address,
+whichever balancer chose it. In the lab the three pools share their
+connections to each backend. The rejected alternative, a pool per
+`lb.Backend`, keeps `max_idle_per_backend` exact per lb pool but opens up
+to three times the connections to the same server. With pools keyed by
+address, Phase 7 keeps idle connections across a reload for free: a new
+snapshot asks the registry for the same addresses and gets the same
+pools.
+
+The registry is built once in `run` and is read-only on the request path,
+because each backend holds its pool pointer directly. Its map lock is
+taken only while a snapshot is being built.
+
+This replaces the Phase 1 decision to dial per request with
+`Connection: close`. `max_idle_per_backend = 0` brings that behaviour
+back, and the bench uses it for the reuse-off run.
+
+### The idle stack is LIFO
+
+`Get` pops the most recently parked connection and `Put` pushes. Under
+steady load a few connections stay hot and the rest sink to the bottom,
+reach `idle_timeout_ms` and are closed, so the pool shrinks to what the
+load needs. A FIFO queue would cycle through every connection, keep each
+of them just young enough to survive, and never shrink. If the top
+connection has expired, every connection under it is older, so `Get`
+closes the whole stack at once. The reaper trims from the bottom.
+
+The mutex guards only the slice and is never held across I/O. Under
+`wrk -c 100` on 4 cores it accounts for about 2% of the mutex wait
+(`bench/phase4/results/profile.txt`), about 0.01 µs per request. If it
+ever showed up, the next step would be to shard each pool into a few
+stacks picked by a per-connection index, at the cost of LIFO being only
+per shard.
+
+### Stale connections: lazy detection with a non-blocking peek
+
+Backends close idle connections whenever they like. The two options in
+the plan were a reader goroutine per idle connection, which notices the
+close at once (what `http.Transport` does), or finding out on next use.
+I chose the latter, with a cheap check on `Get`: if the connection's
+`bufio.Reader` holds buffered bytes, or a `recvfrom(MSG_PEEK|MSG_DONTWAIT)`
+on the socket returns anything other than `EAGAIN` (a FIN, a reset,
+unsolicited bytes such as a backend's 408), the connection is discarded
+and `Get` tries the next one. The cost is one system call per reuse. The
+`RawConn` and the callback are built once per connection, so the check
+allocates nothing. A reader goroutine per connection would cost a
+goroutine and a buffer per idle connection, plus a hand-off and a
+deadline change on every `Get`.
+
+What the check cannot see is a close that lands between the check and
+the request. The retry covers that. On platforms other than Linux the
+check always passes and the retry is the only defence.
+
+### When a connection is reused
+
+A connection is parked only if every one of these holds:
+
+- the request writer finished on its own (not through `stop()`) and the
+  request body reached EOF;
+- the response body was read to EOF, or there was none;
+- the backend did not send `Connection: close` (`resp.Close`, which also
+  covers HTTP/1.0 responses);
+- the body was not close-delimited: it had a length or was chunked;
+- the client write succeeded.
+
+Every other path closes the connection. The connection is parked before
+the access line is written, so the next request can have it at once; an
+earlier version parked it in a deferred call, and a request on another
+client connection could dial in the gap.
+
+An upstream `Conn` has two ways to close. `Close` is the socket close
+that the request writer goroutine and `bodyWriter.stop` may call
+concurrently to abort. `Discard` closes and returns the pooled `bufio`
+buffers, and only the owning goroutine calls it, after the writer is
+joined. `Pool.Put` and the pool's own closes use `Discard`.
+
+### Retry once, strictly
+
+A request that fails on a reused connection is sent again once on a new
+connection to the same backend when all of these hold: no response byte
+arrived, the error is EOF, a reset or EPIPE (not a timeout, which means a
+slow backend, not a stale connection), the request has no body (a body
+streams from the client and cannot be replayed), and either nothing was
+written or the method is GET, HEAD, OPTIONS or TRACE. The last condition
+is the strict reading chosen over the plan's "any request": a POST that
+left the proxy may have been processed by a backend that died before
+answering. `http.Transport` makes the same distinction. The access log
+marks such requests `"retried": true`. Phase 5 retries on a different
+backend; this retry is only about stale keep-alive connections.
+
+### The reaper and the settings
+
+One reaper goroutine per registry wakes every `idle_timeout / 2` (at
+least 10 ms) and closes connections past the timeout. `run` owns it and
+`Registry.Close` stops it. `Get` already skips expired connections, so
+the reaper only bounds how long a socket to an idle backend lingers.
+
+`[upstream]` defaults to `max_idle_per_backend = 100` and
+`idle_timeout_ms = 30000`. The timeout is shorter than common backend
+keep-alive timeouts (nginx 75 s, the test backend 120 s), so the proxy
+usually closes first and the liveness check rarely has to catch a backend
+close. There is no limit on connections in use per backend, only on idle
+ones, as with nginx's `keepalive`.
+
+### Pools size themselves to each backend's peak
+
+Each backend's pool grows to the most requests that backend has had in
+flight at once. Round-robin does not even out in-flight counts, and a
+stall (GC, the race detector, a slow backend moment) piles requests onto
+one backend, so with 100 clients and three backends the pools grow
+towards 100 connections each, 300 in all, not 100. New dials after
+warm-up come in short bursts as a pool reaches a new peak, then stop at
+the cap. Without `-race` the count is flat within about two seconds. The
+integration test therefore bounds new connections as a fraction of
+requests (under 0.5%; without reuse it is 100%), and `reuse.sh` records
+the per-second curve. Least-connections balancing keeps peaks lower;
+round-robin is what the bench uses.
+
+### Buffers from `sync.Pool`, per-request state in the connection
+
+The 4 KiB readers and writers on client and upstream connections come
+from `sync.Pool`s in `httpx`. Client buffers go back when the connection
+goroutine ends; upstream ones through `Discard`. The access record, both
+`httpx.Body` values, both flushing readers and the request writer live in
+`clientConn` and are reset per request, so a request without a body
+starts no goroutine and allocates none of them. Copy buffers were already
+pooled by `net/http` (`Request.Write` and `Response.Write` copy through
+its 32 KiB pool), so no copy-buffer pool of our own was needed.
+
+What remains (35 allocations for a GET) is mostly `net/http`'s parsing
+and serialising (header maps, the URL, transfer writers) and the
+`X-Forwarded-For` string, which only a parser of our own would remove.
+
+### Admin listener: pprof on loopback only
+
+`internal/admin` is an `http.Server` serving the `net/http/pprof`
+handlers. `admin.address` must be a loopback IP or `localhost`, checked
+by the config parser and again by `admin.Listen`, because profiles
+expose memory contents and a CPU profile or trace can be asked to run
+for minutes. `WriteTimeout` is 5 minutes so long profiles fit; pprof
+refuses longer ones. Mutex and block profiling cost something on every
+contended lock or blocking event, so they are off unless
+`mutex_profile_fraction` and `block_profile_rate_ns` are set; the bench
+scripts set them. Phase 5 adds `/metrics` and `/status` to the same
+server.
+
+### The access log is buffered, and Write never does I/O
+
+The first mutex profile under load had one dominant lock: slog's
+handler mutex, about 96% of all mutex wait. slog holds it around each
+`Write` to its output, and that `Write` was a system call per access
+line. Logging off barely changed throughput (system calls on the request
+path are the limit on this machine), but every request queued for it.
+
+Fix, chosen with the user: a buffered log, like nginx's
+`access_log buffer=64k flush=1s` (`[log] buffer_bytes = 65536`,
+`flush_ms = 1000`; `buffer_bytes = 0` is unbuffered). Two attempts did
+not help: a buffer flushed by the writer that filled it, and the same
+with the write moved outside the buffer's own lock. Either way the
+flushing goroutine was still inside slog's `Write`, holding slog's mutex
+for the whole system call. The version kept, `internal/logbuf`, has two
+buffers and a flusher goroutine. `Write` only copies; a full buffer is
+handed to the flusher and the spare takes its place. A writer waits only
+if the spare fills too before the flusher finishes, which is backpressure
+from a slow stdout. The flusher also writes out a partly full buffer
+every interval.
+
+Under `wrk -c 100` on 4 cores, mutex wait on the log path fell from about
+3.2 s to about 0.2 s per 8 s profile, the same as with slog writing to
+`io.Discard`. The cost is durability: a crash loses up to one flush
+interval of log lines. `main` closes the writer before `os.Exit`, so a
+failed startup still logs its error, and SIGTERM flushes everything.
+Lines from different connections stay whole and in order.
+
+### GOMAXPROCS follows the CPU limit
+
+Go 1.25 and later set GOMAXPROCS from the cgroup CPU limit, so no
+dependency like `automaxprocs` is needed. The proxy logs `gomaxprocs` and
+`num_cpu` at startup. The lab gives the proxy `cpus: "2"`, and
+`check-lab.sh` checks the startup line against `/sys/fs/cgroup/cpu.max`.
+
+### Tests and benches
+
+Unit tests in `internal/upstream` (LIFO order, caps, expiry, the
+liveness check against FIN, reset and stray bytes, the reaper, `Close`)
+and `internal/conn` (each rule for not reusing, checked on the pool
+itself because the liveness check and the retry would hide a connection
+parked by mistake; the retry and each case where it must not happen).
+Integration tests cover the steady state with 100 clients and a backend
+restarted between requests, over HTTP and HTTPS. The test backend counts
+accepted connections, served at `/stats`, so reuse is measured at the
+backends rather than by the proxy's own account.
+
+`bench/phase4/` pins the proxy, the backends and wrk to separate CPUs
+(`lib.sh`). `scaling.sh` reports the median of three interleaved runs,
+because throughput on WSL2 varies by a quarter or more between runs.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H):
+
+- Reuse on vs off, `wrk -c 100`, 4 cores: 67k vs 27k req/s, p99 8.0 vs
+  14.7 ms. New upstream connections: 222 in all with reuse, 24 of them
+  after the first 3 s; without reuse, one per request (about 27k/s) and
+  TIME_WAIT at the kernel's cap of 32,768.
+- GOMAXPROCS 1, 2, 4: 18.7k, 34.3k, 51.3k req/s (1.84×, 2.75×), against
+  260k from the backends alone. The CPU profile is about half system
+  calls.
+- Mutex wait under load: about 0.3–0.4 µs per request; slog's handler
+  lock about half of it, the runtime's own locks most of the rest, the
+  upstream pools 2%.
+- Allocations per request (`BenchmarkProxy`): GET 80 allocs / 24 KB
+  before, 41 / 2.9 KB with reuse, 35 / 2.6 KB with pooling; POST 89 →
+  50 → 42. With reuse off, pooling takes a GET from 80 to 72 allocations
+  and 24 to 15 KB.
+- `-race` wrk, GET and POST `/echo` at once for 30 s: no races, no
+  non-200 responses, fds back to baseline after reaping.

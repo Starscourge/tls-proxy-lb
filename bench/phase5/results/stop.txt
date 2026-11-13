@@ -1,0 +1,51 @@
+# Phase 5: SIGSTOP one of three backends under load, then SIGCONT
+date:     2026-11-13T15:13:29Z
+commit:   1ac9640
+go:       go1.27.4 linux/amd64
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+pinning:  proxy 0,2,4,6 (first GOMAXPROCS of them), backends 8-15, wrk 16-21
+proxy:    -race build, GOMAXPROCS 4, 3 test backends, round-robin, max_retries 1,
+          upstream_response_ms 1000; health: interval 500 ms, timeout 250 ms,
+          rise 2, fall 3, passive_failures 3, eject_ms 2000
+command:  wrk -t2 -c32 -d20s --timeout 5s --latency http://127.0.0.1:18080/
+
+Running 20s test @ http://127.0.0.1:18080/
+  2 threads and 32 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    22.30ms  111.27ms   1.01s    96.68%
+    Req/Sec     6.37k   760.21     7.54k    87.96%
+  Latency Distribution
+     50%    2.12ms
+     75%    5.04ms
+     90%    9.15ms
+     99%  741.39ms
+  243076 requests in 20.00s, 33.85MB read
+Requests/sec:  12152.41
+Transfer/sec:      1.69MB
+
+## Timeline (b2 = 127.0.0.1:18002)
+failure at:                    5003ms (stop)
+out of rotation after:         1026 ms
+returned at:                   12005ms
+back in rotation after:        534 ms
+
+## Failed requests (access log, status other than 200)
+during detection:              0   (target 0: every request is a retryable GET)
+while out of rotation:         0   (must be 0)
+outside the failure window:    0
+access log lines:              243105
+
+## Metrics at the end
+proxy_backend_healthy{backend="127.0.0.1:18001"} 1
+proxy_backend_healthy{backend="127.0.0.1:18002"} 1
+proxy_backend_healthy{backend="127.0.0.1:18003"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="ejected"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="healthy"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="unhealthy"} 1
+proxy_retries_total{pool="default",reason="timeout"} 32
+
+data race reports:             0
+proxy exit code:               0 (after SIGTERM)
+
+RESULT: PASS

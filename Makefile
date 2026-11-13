@@ -7,7 +7,8 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
         check-config lab-up lab-down lab-check netem-check prom-check wrk-race bench-lb testssl \
-        bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile clean
+        bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
+        bench-kill bench-stop clean
 
 all: build test lint
 
@@ -89,6 +90,12 @@ bench-scaling:           # throughput at GOMAXPROCS 1, 2 and 4
 	bench/phase4/scaling.sh
 bench-profile:           # mutex, block and CPU profiles under load
 	bench/phase4/profile.sh
+
+# Phase 5 "Done when" items; results in bench/phase5/results/.
+bench-kill:              # kill -9 one of three backends under wrk, then restart it
+	bench/phase5/failover.sh kill
+bench-stop:              # SIGSTOP one of three backends under wrk, then SIGCONT
+	bench/phase5/failover.sh stop
 
 clean:
 	rm -rf $(BIN)

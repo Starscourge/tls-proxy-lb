@@ -1,0 +1,52 @@
+# Phase 5: kill -9 one of three backends under load, then restart it
+date:     2026-11-13T15:13:02Z
+commit:   1ac9640
+go:       go1.27.4 linux/amd64
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+pinning:  proxy 0,2,4,6 (first GOMAXPROCS of them), backends 8-15, wrk 16-21
+proxy:    -race build, GOMAXPROCS 4, 3 test backends, round-robin, max_retries 1,
+          upstream_response_ms 1000; health: interval 500 ms, timeout 250 ms,
+          rise 2, fall 3, passive_failures 3, eject_ms 2000
+command:  wrk -t2 -c32 -d20s --timeout 5s --latency http://127.0.0.1:18080/
+
+Running 20s test @ http://127.0.0.1:18080/
+  2 threads and 32 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     3.28ms    3.40ms  37.02ms   85.52%
+    Req/Sec     6.41k   590.64    13.18k    78.30%
+  Latency Distribution
+     50%    2.03ms
+     75%    4.69ms
+     90%    7.95ms
+     99%   15.19ms
+  255849 requests in 20.10s, 35.62MB read
+Requests/sec:  12728.61
+Transfer/sec:      1.77MB
+
+## Timeline (b2 = 127.0.0.1:18002)
+failure at:                    5002ms (kill)
+out of rotation after:         30 ms
+returned at:                   12005ms
+back in rotation after:        613 ms
+
+## Failed requests (access log, status other than 200)
+during detection:              0   (target 0: every request is a retryable GET)
+while out of rotation:         0   (must be 0)
+outside the failure window:    0
+access log lines:              255879
+
+## Metrics at the end
+proxy_backend_healthy{backend="127.0.0.1:18001"} 1
+proxy_backend_healthy{backend="127.0.0.1:18002"} 1
+proxy_backend_healthy{backend="127.0.0.1:18003"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="ejected"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="healthy"} 1
+proxy_backend_transitions_total{backend="127.0.0.1:18002",to="unhealthy"} 1
+proxy_retries_total{pool="default",reason="dial"} 16
+proxy_retries_total{pool="default",reason="stale_conn"} 8
+
+data race reports:             0
+proxy exit code:               0 (after SIGTERM)
+
+RESULT: PASS

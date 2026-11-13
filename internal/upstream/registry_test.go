@@ -64,3 +64,14 @@ func TestRegistryReuseOff(t *testing.T) {
 	}
 	r.Close()
 }
+
+func TestRegistryPoolsSorted(t *testing.T) {
+	r := NewRegistry(Options{})
+	defer r.Close()
+	r.Pool("10.0.0.2:80")
+	r.Pool("10.0.0.1:80")
+	ps := r.Pools()
+	if len(ps) != 2 || ps[0].Addr() != "10.0.0.1:80" || ps[1].Addr() != "10.0.0.2:80" {
+		t.Fatalf("pools %v", ps)
+	}
+}

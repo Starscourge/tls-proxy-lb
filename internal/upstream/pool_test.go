@@ -263,3 +263,45 @@ func TestConnDiscard(t *testing.T) {
 		t.Fatal("buffers kept after Discard")
 	}
 }
+
+// Flush closes the idle connections but leaves the pool working.
+func TestPoolFlush(t *testing.T) {
+	s := newServer(t)
+	p := NewPool(s.addr, Options{MaxIdle: 4, IdleTimeout: time.Minute})
+	a, b := get(t, p), get(t, p)
+	p.Put(a)
+	p.Flush()
+	if p.Idle() != 0 || !isClosed(a) {
+		t.Fatal("Flush kept an idle connection")
+	}
+	p.Put(b)
+	if p.Idle() != 1 || isClosed(b) {
+		t.Fatal("pool stopped parking after Flush")
+	}
+}
+
+// Dials counts every dial, failed ones too; Reuses counts idle connections
+// handed out again.
+func TestPoolCounters(t *testing.T) {
+	s := newServer(t)
+	p := NewPool(s.addr, Options{MaxIdle: 4, IdleTimeout: time.Minute})
+	a := get(t, p)
+	p.Put(a)
+	get(t, p)
+	get(t, p)
+	if p.Dials() != 2 || p.Reuses() != 1 {
+		t.Fatalf("dials %d reuses %d, want 2 and 1", p.Dials(), p.Reuses())
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+	refused := NewPool(ln.Addr().String(), Options{})
+	if _, err := refused.Get(context.Background(), time.Second, time.Second); err == nil {
+		t.Fatal("dial to a closed port succeeded")
+	}
+	if refused.Dials() != 1 {
+		t.Fatalf("failed dial not counted: %d", refused.Dials())
+	}
+}

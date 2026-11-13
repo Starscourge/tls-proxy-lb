@@ -1,6 +1,8 @@
 package upstream
 
 import (
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -57,6 +59,15 @@ func (r *Registry) Pool(addr string) *Pool {
 		r.pools[addr] = p
 	}
 	return p
+}
+
+// Pools returns every pool, sorted by address.
+func (r *Registry) Pools() []*Pool {
+	r.mu.Lock()
+	out := r.snapshot()
+	r.mu.Unlock()
+	slices.SortFunc(out, func(a, b *Pool) int { return strings.Compare(a.addr, b.addr) })
+	return out
 }
 
 // Close stops the reaper and closes every pool's idle connections.

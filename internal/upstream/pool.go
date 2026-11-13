@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,9 @@ type Pool struct {
 	mu     sync.Mutex
 	idle   []*Conn // oldest first
 	closed bool
+
+	// dials and reuses count connections handed out, for metrics.
+	dials, reuses atomic.Uint64
 }
 
 // NewPool returns an empty pool for addr. A pool made with MaxIdle zero
@@ -67,14 +71,24 @@ func (p *Pool) Get(ctx context.Context, connectTimeout, ioTimeout time.Duration)
 		c.reused = true
 		c.cr.n, c.cw.n = 0, 0
 		c.dw.Timeout = ioTimeout
+		p.reuses.Add(1)
 		return c, nil
 	}
 }
 
-// Dial returns a new connection, bypassing the idle stack.
+// Dial returns a new connection, bypassing the idle stack. Every attempt
+// counts as a dial, failed or not.
 func (p *Pool) Dial(ctx context.Context, connectTimeout, ioTimeout time.Duration) (*Conn, error) {
+	p.dials.Add(1)
 	return Dial(ctx, p.addr, connectTimeout, ioTimeout)
 }
+
+// Dials returns how many connections the pool has dialled, failures
+// included.
+func (p *Pool) Dials() uint64 { return p.dials.Load() }
+
+// Reuses returns how many idle connections the pool has handed out again.
+func (p *Pool) Reuses() uint64 { return p.reuses.Load() }
 
 // pop takes the most recently used idle connection. If that one is past
 // the idle timeout, every connection under it is older still, so all of
@@ -150,6 +164,17 @@ func (p *Pool) reap(now time.Time) {
 	}
 	p.mu.Unlock()
 	closeAll(expired)
+}
+
+// Flush closes every idle connection. Connections Put later are parked as
+// usual. It is called when the backend is ejected: its idle connections
+// are likely dead, and holding them helps no one.
+func (p *Pool) Flush() {
+	p.mu.Lock()
+	idle := p.idle
+	p.idle = nil
+	p.mu.Unlock()
+	closeAll(idle)
 }
 
 // Close closes every idle connection, and every connection Put afterwards.

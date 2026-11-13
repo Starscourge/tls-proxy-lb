@@ -1,9 +1,10 @@
-// Package admin implements the admin listener. Phase 4 serves the pprof
-// profiles under /debug/pprof/; Phase 5 adds /metrics and /status.
+// Package admin implements the admin listener: /metrics in Prometheus
+// format, /status as JSON, and the pprof profiles under /debug/pprof/.
 //
 // It is not on the request path, so it uses http.Server. pprof exposes
 // memory contents and can stall the process for a profile's duration, so
-// the listener binds only loopback addresses.
+// the listener binds only loopback addresses. Prometheus in the lab
+// scrapes it from inside the proxy's network namespace.
 package admin
 
 import (
@@ -38,6 +39,10 @@ type Options struct {
 	// runtime.SetBlockProfileRate. Both are process-wide.
 	MutexProfileFraction int
 	BlockProfileRate     int
+	// Metrics, if set, is served at /metrics.
+	Metrics http.Handler
+	// Status, if set, is served at /status.
+	Status http.Handler
 }
 
 // Server is the admin listener.
@@ -67,7 +72,7 @@ func Listen(ctx context.Context, opts Options, logger *slog.Logger) (*Server, er
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Server{ln: ln, srv: &http.Server{
-		Handler:           Handler(),
+		Handler:           Handler(opts),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -97,11 +102,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Handler returns the admin routes: the pprof index at /debug/pprof/ and
-// every profile under it (heap, allocs, goroutine, mutex, block,
-// threadcreate, profile for CPU, trace).
-func Handler() http.Handler {
+// Handler returns the admin routes: /metrics and /status if opts has them,
+// and the pprof index at /debug/pprof/ with every profile under it (heap,
+// allocs, goroutine, mutex, block, threadcreate, profile for CPU, trace).
+func Handler(opts Options) http.Handler {
 	mux := http.NewServeMux()
+	if opts.Metrics != nil {
+		mux.Handle("/metrics", opts.Metrics)
+	}
+	if opts.Status != nil {
+		mux.Handle("/status", opts.Status)
+	}
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)

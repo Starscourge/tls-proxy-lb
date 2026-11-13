@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -169,6 +170,16 @@ func (s *Snapshot) Route(host string) *lb.Pool {
 func (s *Snapshot) HasRoute(host string) bool {
 	_, ok := s.routes[NormaliseHost(host)]
 	return ok
+}
+
+// Pools returns every pool, sorted by name.
+func (s *Snapshot) Pools() []*lb.Pool {
+	out := make([]*lb.Pool, 0, len(s.pools))
+	for _, p := range s.pools {
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b *lb.Pool) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 // Pool returns the pool with the given name, or nil.

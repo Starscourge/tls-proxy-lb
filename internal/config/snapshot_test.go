@@ -274,6 +274,9 @@ backends = [{ address = "127.0.0.1:8000" }]
 	if p[0].Health == nil || p[0].Health != q[0].Health || p[0].Health != chk.Target("127.0.0.1:8000") || p[1].Health == p[0].Health {
 		t.Fatal("health targets not shared by address")
 	}
+	if ps := s.Pools(); len(ps) != 2 || ps[0].Name != "p" || ps[1].Name != "q" {
+		t.Fatalf("pools %v", ps)
+	}
 	if s.Pool("p").Health != chk {
 		t.Fatal("pool not given the checker")
 	}

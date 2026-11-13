@@ -46,9 +46,10 @@ var Algorithms = []Algorithm{RoundRobin, LeastConn, ConsistentHash}
 // snapshot; what moves is atomic: health, counters, and the cached healthy
 // set.
 type Pool struct {
-	Name     string
-	Backends []*Backend
-	Balancer Balancer
+	Name      string
+	Algorithm Algorithm
+	Backends  []*Backend
+	Balancer  Balancer
 	// Health, if set, is the checker whose targets the backends' Health
 	// fields come from. Its generation tells the pool when to rebuild its
 	// healthy set. Nil means every backend is always healthy.
@@ -86,9 +87,10 @@ func NewPool(name string, addrs []string, opts PoolOptions) (*Pool, error) {
 	for i, a := range addrs {
 		backends[i] = NewBackend(a)
 	}
-	p := &Pool{Name: name, Backends: backends, Stats: &metrics.PoolStats{}}
+	p := &Pool{Name: name, Algorithm: opts.Algorithm, Backends: backends, Stats: &metrics.PoolStats{}}
 	switch opts.Algorithm {
 	case RoundRobin, "":
+		p.Algorithm = RoundRobin
 		p.Balancer = &RoundRobinBalancer{}
 	case LeastConn:
 		p.Balancer = &LeastConnBalancer{}

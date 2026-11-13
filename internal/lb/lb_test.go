@@ -151,15 +151,15 @@ func TestNewPool(t *testing.T) {
 	if len(p.Backends) != 2 || p.Backends[1].Addr != "b:2" {
 		t.Fatalf("backends %+v", p.Backends)
 	}
-	if _, ok := p.Balancer.(*LeastConnBalancer); !ok {
-		t.Fatalf("balancer %T", p.Balancer)
+	if _, ok := p.Balancer.(*LeastConnBalancer); !ok || p.Algorithm != LeastConn {
+		t.Fatalf("balancer %T, algorithm %q", p.Balancer, p.Algorithm)
 	}
 	if b := p.Pick(&RequestInfo{}); b == nil {
 		t.Fatal("pool picked nil")
 	}
 	if p, _ := NewPool("p", []string{"a:1"}, PoolOptions{}); p == nil {
 		t.Fatal("default algorithm rejected")
-	} else if _, ok := p.Balancer.(*RoundRobinBalancer); !ok {
+	} else if _, ok := p.Balancer.(*RoundRobinBalancer); !ok || p.Algorithm != RoundRobin {
 		t.Fatalf("default balancer %T, want round robin", p.Balancer)
 	}
 	if _, err := NewPool("p", nil, PoolOptions{}); err == nil {

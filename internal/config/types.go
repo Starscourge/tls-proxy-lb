@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // Config is a parsed and validated config file, with defaults filled in.
@@ -163,6 +164,11 @@ type Upstream struct {
 	// request before it is closed. It should be shorter than the backends'
 	// own keep-alive timeouts, so the proxy is usually the side to close.
 	IdleTimeout time.Duration
+}
+
+// Options returns the settings in the form upstream.NewRegistry takes.
+func (u Upstream) Options() upstream.Options {
+	return upstream.Options{MaxIdle: u.MaxIdlePerBackend, IdleTimeout: u.IdleTimeout}
 }
 
 // DefaultUpstream returns the pool settings used when the file sets none.

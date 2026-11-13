@@ -11,6 +11,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // certDir writes certs/a.test.{crt,key} and certs/default.{crt,key} (for
@@ -37,7 +38,7 @@ func mustSnapshot(t *testing.T, src string) *Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewSnapshot(c)
+	s, err := NewSnapshot(c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ default_key  = "certs/a.test.key"
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewSnapshot(c)
+	_, err = NewSnapshot(c, nil)
 	if err == nil {
 		t.Fatal("bad certificates accepted")
 	}
@@ -180,17 +181,17 @@ func TestNewSnapshotRejectsDanglingPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Routes[0].Pool = "gone"
-	if _, err := NewSnapshot(c); err == nil {
+	if _, err := NewSnapshot(c, nil); err == nil {
 		t.Fatal("route to an unknown pool accepted")
 	}
 	c.Routes[0].Pool = "p"
 	c.DefaultPool = "gone"
-	if _, err := NewSnapshot(c); err == nil {
+	if _, err := NewSnapshot(c, nil); err == nil {
 		t.Fatal("unknown default pool accepted")
 	}
 	c.DefaultPool = ""
 	c.Timeouts.Idle = 0
-	if _, err := NewSnapshot(c); err == nil {
+	if _, err := NewSnapshot(c, nil); err == nil {
 		t.Fatal("zero timeout accepted")
 	}
 }
@@ -231,4 +232,43 @@ func poolName(p *lb.Pool) string {
 		return "<nil>"
 	}
 	return p.Name
+}
+
+// Backends with the same address share one connection pool from the
+// registry, whichever lb pool they are in. Without a registry nothing is
+// reused.
+func TestNewSnapshotConnectionPools(t *testing.T) {
+	src := base + route + `
+[pool.p]
+backends = [{ address = "127.0.0.1:8000" }, { address = "127.0.0.1:8001" }]
+[pool.q]
+backends = [{ address = "127.0.0.1:8000" }]
+`
+	c, err := Parse("pools.toml", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := upstream.NewRegistry(c.Upstream.Options())
+	defer reg.Close()
+	s, err := NewSnapshot(c, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, q := s.Pool("p").Backends, s.Pool("q").Backends
+	if p[0] == q[0] {
+		t.Fatal("backends shared across pools; only connections should be")
+	}
+	if p[0].Conns != q[0].Conns || p[0].Conns != reg.Pool("127.0.0.1:8000") || p[1].Conns == p[0].Conns {
+		t.Fatal("connection pools not shared by address")
+	}
+	if !p[0].Conns.Reuse() {
+		t.Fatal("registry pool does not reuse with the default settings")
+	}
+	s, err = NewSnapshot(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := s.Pool("p").Backends[0]; b.Conns == nil || b.Conns.Reuse() {
+		t.Fatal("without a registry a backend must dial per request")
+	}
 }

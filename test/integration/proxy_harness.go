@@ -23,6 +23,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // Schemes are the listener modes the Phase 1 and 2 tests run under.
@@ -151,7 +152,9 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	if err != nil {
 		t.Fatalf("proxy config:\n%s\n%v", src.String(), err)
 	}
-	snap, err := config.NewSnapshot(cfg)
+	reg := upstream.NewRegistry(cfg.Upstream.Options())
+	t.Cleanup(reg.Close)
+	snap, err := config.NewSnapshot(cfg, reg)
 	if err != nil {
 		t.Fatalf("proxy snapshot: %v", err)
 	}

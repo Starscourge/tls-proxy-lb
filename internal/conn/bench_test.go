@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // The benchmarks measure the proxy's own cost per request, allocations
@@ -115,7 +116,9 @@ func benchProxy(b *testing.B, backend string, reuse bool) string {
 	if !reuse {
 		c.Upstream.MaxIdlePerBackend = 0
 	}
-	snap, err := config.NewSnapshot(c)
+	reg := upstream.NewRegistry(c.Upstream.Options())
+	b.Cleanup(reg.Close)
+	snap, err := config.NewSnapshot(c, reg)
 	if err != nil {
 		b.Fatal(err)
 	}

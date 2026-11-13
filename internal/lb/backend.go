@@ -1,6 +1,10 @@
 package lb
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
+)
 
 // Backend is one upstream server in a pool.
 //
@@ -9,12 +13,19 @@ import "sync/atomic"
 type Backend struct {
 	// Addr is the host:port requests are sent to.
 	Addr string
+	// Conns supplies connections to Addr. It is shared with every other
+	// backend, in any pool, that has the same address. NewBackend gives it
+	// a pool that does not reuse connections; config.NewSnapshot replaces
+	// that with the registry's pool before the snapshot is published.
+	Conns *upstream.Pool
 
 	inflight atomic.Int64
 }
 
 // NewBackend returns a backend for addr with no requests in flight.
-func NewBackend(addr string) *Backend { return &Backend{Addr: addr} }
+func NewBackend(addr string) *Backend {
+	return &Backend{Addr: addr, Conns: upstream.NewPool(addr, upstream.Options{})}
+}
 
 // Acquire records a request sent to the backend. Every Acquire is matched by
 // one Release once the response is finished or has failed.

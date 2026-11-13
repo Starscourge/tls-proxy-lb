@@ -19,6 +19,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // --- helpers ---------------------------------------------------------------
@@ -97,7 +98,9 @@ func startProxy(t *testing.T, backend string, mut func(*config.Config)) (string,
 
 func newSnapshot(t *testing.T, c *config.Config) *config.Snapshot {
 	t.Helper()
-	snap, err := config.NewSnapshot(c)
+	reg := upstream.NewRegistry(c.Upstream.Options())
+	t.Cleanup(reg.Close)
+	snap, err := config.NewSnapshot(c, reg)
 	if err != nil {
 		t.Fatal(err)
 	}

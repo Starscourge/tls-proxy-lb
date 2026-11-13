@@ -9,6 +9,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // Snapshot is the runtime form of one Config: pools built, routes indexed
@@ -38,12 +39,15 @@ type Snapshot struct {
 }
 
 // NewSnapshot builds the pools and route table for c and loads its
-// certificates. c must come from Parse or Load. Certificate problems (a
+// certificates. c must come from Parse or Load. Each backend takes its
+// connections from reg's pool for its address; a nil reg (as for
+// -check-config) leaves every backend dialling a new connection per
+// request. Certificate problems (a
 // file that does not load, a key that does not match, a certificate not
 // valid for its route's host) are reported as FieldErrors, all of them
 // joined; the other checks only catch a hand-built Config that names a pool
 // it does not define.
-func NewSnapshot(c *Config) (*Snapshot, error) {
+func NewSnapshot(c *Config, reg *upstream.Registry) (*Snapshot, error) {
 	if err := c.Timeouts.Validate(); err != nil {
 		return nil, err
 	}
@@ -60,6 +64,11 @@ func NewSnapshot(c *Config) (*Snapshot, error) {
 		p, err := lb.NewPool(pc.Name, pc.Backends, lb.PoolOptions{Algorithm: pc.Algorithm, HashHeader: pc.HashHeader})
 		if err != nil {
 			return nil, err
+		}
+		if reg != nil {
+			for _, b := range p.Backends {
+				b.Conns = reg.Pool(b.Addr)
+			}
 		}
 		s.pools[pc.Name] = p
 	}

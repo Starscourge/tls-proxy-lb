@@ -28,6 +28,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -71,7 +72,7 @@ func checkConfig(path string, stdout, stderr io.Writer) int {
 	cfg, err := config.Load(path)
 	var snap *config.Snapshot
 	if err == nil {
-		snap, err = config.NewSnapshot(cfg)
+		snap, err = config.NewSnapshot(cfg, nil)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -125,7 +126,12 @@ func handlers(store *config.Store, logger *slog.Logger) ([]conn.Handler, error) 
 // Goroutines: one accept loop per listener, each started here and stopped
 // by srv.Close closing its listener; run waits for all of them to return.
 func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready chan<- []string) error {
-	snap, err := config.NewSnapshot(cfg)
+	reg := upstream.NewRegistry(cfg.Upstream.Options())
+	// Deferred first, so it runs after the server has closed every client
+	// connection: requests that end later close their upstream connection
+	// instead of parking it.
+	defer reg.Close()
+	snap, err := config.NewSnapshot(cfg, reg)
 	if err != nil {
 		return err
 	}

@@ -223,3 +223,17 @@ func TestHeaderLimitReaderUnderLimit(t *testing.T) {
 		t.Fatalf("got %q, %v, exhausted %v", got, err, l.Exhausted())
 	}
 }
+
+// Reset clears everything a previous use left: counters, EOF, error and an
+// abort.
+func TestBodyReset(t *testing.T) {
+	b := NewBody(strings.NewReader("abc"), nil, 0)
+	io.ReadAll(b)
+	b.Abort()
+	b.Read(make([]byte, 1))
+	b.Reset(strings.NewReader("hello"), nil, 0)
+	got, err := io.ReadAll(b)
+	if err != nil || string(got) != "hello" || b.N() != 5 || !b.EOF() || b.Err() != nil {
+		t.Fatalf("after Reset: %q %v n=%d eof=%v err=%v", got, err, b.N(), b.EOF(), b.Err())
+	}
+}

@@ -23,9 +23,6 @@ import (
 )
 
 const (
-	clientReadBufferSize  = 4 << 10
-	clientWriteBufferSize = 4 << 10
-
 	// errorWriteTimeout bounds writing a proxy-generated error response.
 	errorWriteTimeout = time.Second
 	// lingerTimeout and lingerMaxBytes bound the drain before closing a
@@ -72,6 +69,7 @@ func (p *Proxy) Validate() error {
 func (p *Proxy) ServeConn(ctx context.Context, tc *TrackedConn) {
 	snap := p.Config.Load()
 	cc := newClientConn(p, tc, snap)
+	defer cc.release()
 	if p.TLS != nil {
 		tlsConn, ok := cc.handshake(ctx)
 		if !ok {
@@ -166,6 +164,15 @@ type clientConn struct {
 	// linger is set when unread request bytes may be left on the
 	// connection, so it must be closed with a drain.
 	linger bool
+
+	// Per-request state, kept here so each request reuses it rather than
+	// allocating its own. Each is valid for one request at a time.
+	rec       accessRecord
+	reqBody   httpx.Body
+	respBody  httpx.Body
+	reqFlush  flushingReader
+	respFlush flushingReader
+	writer    bodyWriter
 }
 
 // tlsInfo is what the access log reports about a connection's TLS session.
@@ -181,10 +188,18 @@ func newClientConn(p *Proxy, tc *TrackedConn, snap *config.Snapshot) *clientConn
 	}
 	cc.use(snap)
 	cc.lr.R = tc
-	cc.br = bufio.NewReaderSize(&cc.lr, clientReadBufferSize)
+	cc.br = httpx.NewReader(&cc.lr)
 	cc.dw = httpx.DeadlineWriter{Conn: tc, Timeout: cc.t.ClientIO}
-	cc.bw = bufio.NewWriterSize(&cc.dw, clientWriteBufferSize)
+	cc.bw = httpx.NewWriter(&cc.dw)
 	return cc
+}
+
+// release returns the connection's buffers to their pools. It runs last,
+// once the request loop and any lingering close are done.
+func (cc *clientConn) release() {
+	httpx.PutReader(cc.br)
+	httpx.PutWriter(cc.bw)
+	cc.br, cc.bw = nil, nil
 }
 
 // use takes the connection's settings from snap.
@@ -316,9 +331,11 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		// client, so a slow upload streams instead of sitting in a buffer.
 		var src io.Reader = req.Body
 		if uc != nil {
-			src = &flushingReader{r: req.Body, src: cc.br, w: uc.W, wrap: wrapUpstreamErr}
+			cc.reqFlush = flushingReader{r: req.Body, src: cc.br, w: uc.W, wrap: wrapUpstreamErr}
+			src = &cc.reqFlush
 		}
-		reqBody = httpx.NewBody(src, cc.c, cc.t.ClientIO)
+		reqBody = &cc.reqBody
+		reqBody.Reset(src, cc.c, cc.t.ClientIO)
 		req.Body = reqBody
 	}
 	if err != nil {
@@ -331,17 +348,18 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	// is nil once parked, or if the retry's dial failed.
 	defer func() {
 		if uc != nil {
-			uc.Close()
+			uc.Discard()
 		}
 	}()
 
-	var w *bodyWriter
-	defer func() { w.stop() }() // reached on every path; a no-op once joined
-	resp, err := cc.exchange(uc, req, reqBody, &w)
+	w := &cc.writer
+	*w = bodyWriter{}
+	defer w.stop() // reached on every path; a no-op once joined
+	resp, err := cc.exchange(uc, req, reqBody, w)
 	if err != nil && retryable(uc, req, reqBody, w, err) {
 		// The backend closed a kept-alive connection as the request went
 		// out, and sent nothing back. Once more, on a new connection.
-		uc.Close()
+		uc.Discard()
 		rec.retried = true
 		uc, err = b.Conns.Dial(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
 		if err != nil {
@@ -349,7 +367,7 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 			return false
 		}
 		rec.reused = false
-		resp, err = cc.exchange(uc, req, reqBody, &w)
+		resp, err = cc.exchange(uc, req, reqBody, w)
 	}
 	if err != nil {
 		w.stop()
@@ -366,8 +384,9 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		// before the proxy waits on the backend for more. Without this a
 		// slow stream would sit in the 4 KiB buffer, and a backend failing
 		// mid-body would leave the client with nothing at all.
-		src := &flushingReader{r: resp.Body, src: uc.R, w: cc.bw, wrap: wrapClientErr}
-		respBody = httpx.NewBody(src, uc, cc.t.UpstreamResponse)
+		cc.respFlush = flushingReader{r: resp.Body, src: uc.R, w: cc.bw, wrap: wrapClientErr}
+		respBody = &cc.respBody
+		respBody.Reset(&cc.respFlush, uc, cc.t.UpstreamResponse)
 		resp.Body = respBody
 	}
 	keepAlive := clientKeepAlive
@@ -424,14 +443,14 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	return keepAlive
 }
 
-// exchange sends req on uc and reads the response headers. *w is set to
-// the request's writer, which the caller joins.
-func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w **bodyWriter) (*http.Response, error) {
+// exchange sends req on uc and reads the response headers. w is started
+// as the request's writer; the caller joins it.
+func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, w *bodyWriter) (*http.Response, error) {
 	if err := uc.SetReadDeadline(time.Now().Add(cc.t.UpstreamResponse)); err != nil {
-		*w = &bodyWriter{}
+		*w = bodyWriter{}
 		return nil, err
 	}
-	*w = startWriter(uc, req, reqBody)
+	w.start(uc, req, reqBody)
 	return cc.readResponse(uc, req)
 }
 
@@ -705,12 +724,14 @@ type bodyWriter struct {
 	err     error         // valid once joined
 }
 
-func startWriter(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body) *bodyWriter {
-	w := &bodyWriter{uc: uc, reqBody: reqBody}
+// start sends req on uc, inline or from a new goroutine; w must not be
+// running.
+func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body) {
+	*w = bodyWriter{uc: uc, reqBody: reqBody}
 	if reqBody == nil {
 		// No body: nothing can block on the client, so write inline.
 		w.err = writeRequest(uc, req)
-		return w
+		return
 	}
 	w.ch = make(chan struct{})
 	go func() {
@@ -722,7 +743,6 @@ func startWriter(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body) *bod
 			uc.Close()
 		}
 	}()
-	return w
 }
 
 func writeRequest(uc *upstream.Conn, req *http.Request) error {
@@ -735,7 +755,7 @@ func writeRequest(uc *upstream.Conn, req *http.Request) error {
 // done reports whether the writer has finished. Once it returns true, err
 // and the request body's counters may be read.
 func (w *bodyWriter) done() bool {
-	if w == nil || w.ch == nil {
+	if w.ch == nil {
 		return true
 	}
 	select {

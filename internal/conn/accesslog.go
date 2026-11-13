@@ -29,8 +29,10 @@ type accessRecord struct {
 	err     error
 }
 
+// newRecord starts the connection's access record afresh for req.
 func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecord {
-	return &accessRecord{start: start, method: req.Method, host: req.Host, path: req.URL.Path, upstream: -1}
+	cc.rec = accessRecord{start: start, method: req.Method, host: req.Host, path: req.URL.Path, upstream: -1}
+	return &cc.rec
 }
 
 // logAccess writes the access line: client IP, scheme, method, host, path,

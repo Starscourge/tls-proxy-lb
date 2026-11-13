@@ -209,7 +209,7 @@ func TestAliveDoesNotBlock(t *testing.T) {
 	s.accept(t)
 	c.SetDeadline(time.Time{})
 	t0 := time.Now()
-	if !alive(c.Conn) {
+	if !c.alive() {
 		t.Fatal("healthy connection reported dead")
 	}
 	if d := time.Since(t0); d > 100*time.Millisecond {
@@ -246,5 +246,20 @@ func TestPoolClose(t *testing.T) {
 	p.Put(b)
 	if p.Idle() != 0 || !isClosed(a) || !isClosed(b) {
 		t.Fatal("closed pool kept connections")
+	}
+}
+
+// Discard closes the connection and gives back its buffers, once.
+func TestConnDiscard(t *testing.T) {
+	s := newServer(t)
+	c, err := Dial(context.Background(), s.addr, time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close() // a concurrent abort closes first; Discard must still work
+	c.Discard()
+	c.Discard()
+	if c.R != nil || c.W != nil {
+		t.Fatal("buffers kept after Discard")
 	}
 }

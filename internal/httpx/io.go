@@ -38,7 +38,17 @@ type Body struct {
 // NewBody wraps r. If conn is non-nil and timeout positive, each Read extends
 // conn's read deadline by timeout.
 func NewBody(r io.Reader, conn net.Conn, timeout time.Duration) *Body {
-	return &Body{r: r, conn: conn, timeout: timeout}
+	b := &Body{}
+	b.Reset(r, conn, timeout)
+	return b
+}
+
+// Reset makes b a new Body over r, as NewBody would, so one value can serve
+// request after request. No other goroutine may be using b.
+func (b *Body) Reset(r io.Reader, conn net.Conn, timeout time.Duration) {
+	b.r, b.conn, b.timeout = r, conn, timeout
+	b.aborted.Store(false)
+	b.n, b.eof, b.err = 0, false, nil
 }
 
 func (b *Body) Read(p []byte) (int, error) {

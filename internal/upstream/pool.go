@@ -61,7 +61,7 @@ func (p *Pool) Get(ctx context.Context, connectTimeout, ioTimeout time.Duration)
 			return p.Dial(ctx, connectTimeout, ioTimeout)
 		}
 		if !usable(c) {
-			c.Close()
+			c.Discard()
 			continue
 		}
 		c.reused = true
@@ -102,23 +102,24 @@ func (p *Pool) pop() *Conn {
 
 // Put parks c for reuse after a request whose response was read to its
 // end, or closes it if the pool is full, closed or not keeping
-// connections. The caller must not use c afterwards.
+// connections. The caller must own c outright, as for Discard, and must not
+// use it afterwards.
 func (p *Pool) Put(c *Conn) {
 	if p.opts.MaxIdle <= 0 {
-		c.Close()
+		c.Discard()
 		return
 	}
 	// A parked connection has no deadline: the stale check on Get must be
 	// able to look at it, and the next request sets its own.
 	if err := c.SetDeadline(time.Time{}); err != nil {
-		c.Close()
+		c.Discard()
 		return
 	}
 	c.idleSince = time.Now()
 	p.mu.Lock()
 	if p.closed || len(p.idle) >= p.opts.MaxIdle {
 		p.mu.Unlock()
-		c.Close()
+		c.Discard()
 		return
 	}
 	p.idle = append(p.idle, c)
@@ -163,7 +164,7 @@ func (p *Pool) Close() {
 
 func closeAll(cs []*Conn) {
 	for _, c := range cs {
-		c.Close()
+		c.Discard()
 	}
 }
 
@@ -171,5 +172,5 @@ func closeAll(cs []*Conn) {
 // buffered that no request asked for, and the socket neither closed by the
 // backend nor holding unread bytes.
 func usable(c *Conn) bool {
-	return c.R.Buffered() == 0 && alive(c.Conn)
+	return c.R.Buffered() == 0 && c.alive()
 }

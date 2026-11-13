@@ -6,17 +6,10 @@ import (
 	"bufio"
 	"context"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
-)
-
-// Buffer sizes for the reader and writer kept with each connection. Bodies
-// bypass both: large reads go straight into the copy buffer and large writes
-// go through httpx.DeadlineWriter's pooled buffer.
-const (
-	readBufferSize  = 4 << 10
-	writeBufferSize = 4 << 10
 )
 
 // Conn is a connection to a backend with its buffered reader and writer.
@@ -25,7 +18,9 @@ const (
 //
 // A Conn is used by one request at a time. While a request body streams,
 // its writer goroutine shares the Conn with the goroutine reading the
-// response, and either may Close it.
+// response, and either may Close it. The reader and writer come from
+// httpx's buffer pools and go back with Discard, which only the owner may
+// call, once no other goroutine can touch the Conn.
 type Conn struct {
 	net.Conn
 	// R reads responses. Reads have no deadline of their own; the caller
@@ -42,6 +37,12 @@ type Conn struct {
 	reused bool
 	// idleSince is when the connection was parked, set by Put.
 	idleSince time.Time
+
+	// raw and peek serve the liveness check, built once per connection so
+	// the check allocates nothing.
+	raw      syscall.RawConn
+	peek     func(fd uintptr) bool
+	peekLive bool
 }
 
 // Dial connects to addr, giving up after connectTimeout or when ctx ends.
@@ -54,10 +55,23 @@ func Dial(ctx context.Context, addr string, connectTimeout, ioTimeout time.Durat
 	c := &Conn{Conn: nc}
 	c.dw = httpx.DeadlineWriter{Conn: nc, Timeout: ioTimeout, ExtendRead: true}
 	c.cr.r = nc
-	c.R = bufio.NewReaderSize(&c.cr, readBufferSize)
+	c.R = httpx.NewReader(&c.cr)
 	c.cw.w = &c.dw
-	c.W = bufio.NewWriterSize(&c.cw, writeBufferSize)
+	c.W = httpx.NewWriter(&c.cw)
 	return c, nil
+}
+
+// Discard closes the connection and returns its buffers to the pool. The
+// caller must own c outright: no request writer still running, no body
+// still reading from it. Calling it again does nothing.
+func (c *Conn) Discard() {
+	if c.R == nil {
+		return
+	}
+	c.Close()
+	httpx.PutReader(c.R)
+	httpx.PutWriter(c.W)
+	c.R, c.W = nil, nil
 }
 
 // Reused reports whether the connection carried an earlier request.

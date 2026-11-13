@@ -44,6 +44,7 @@ func (r *Redirect) Validate() error {
 // ServeConn reads requests from tc and answers each with a redirect.
 func (r *Redirect) ServeConn(ctx context.Context, tc *TrackedConn) {
 	cc := newClientConn(&r.proxy, tc, r.proxy.Config.Load())
+	defer cc.release()
 	cc.redirectPort = r.port
 	for first := true; cc.serveRequest(ctx, first); first = false {
 	}

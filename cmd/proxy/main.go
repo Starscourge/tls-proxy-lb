@@ -1,10 +1,11 @@
 // Command proxy is the TLS-terminating reverse proxy and load balancer.
 //
-// Phase 3: each [[listener]] in the config file terminates TLS (mode
-// "https", the default), serves plain HTTP ("http") or redirects to HTTPS
-// ("redirect"). SNI picks the certificate and the pool; requests are
-// balanced across the pool by round-robin, least-connections or consistent
-// hashing.
+// Each [[listener]] in the config file terminates TLS (mode "https", the
+// default), serves plain HTTP ("http") or redirects to HTTPS ("redirect").
+// SNI picks the certificate and the pool; requests are balanced across the
+// pool by round-robin, least-connections or consistent hashing, over
+// upstream connections kept alive and reused. An optional loopback admin
+// listener serves pprof.
 //
 // Usage:
 //
@@ -22,9 +23,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/admin"
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
@@ -119,13 +122,26 @@ func handlers(store *config.Store, logger *slog.Logger) ([]conn.Handler, error) 
 	return out, https.Validate()
 }
 
+// listening is what run reports once every listener is open.
+type listening struct {
+	// addrs are the bound proxy listener addresses, in config order.
+	addrs []string
+	// admin is the bound admin address, or "" without one.
+	admin string
+}
+
+// adminShutdownTimeout bounds how long a profile in progress may hold up
+// shutdown.
+const adminShutdownTimeout = 2 * time.Second
+
 // run serves cfg until ctx is cancelled or a listener fails. ready, if
-// non-nil, receives the bound listener addresses, in config order, once
-// every listener is open.
+// non-nil, receives the bound addresses once every listener is open.
 //
 // Goroutines: one accept loop per listener, each started here and stopped
-// by srv.Close closing its listener; run waits for all of them to return.
-func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready chan<- []string) error {
+// by srv.Close closing its listener; the admin server's Serve, stopped by
+// its Shutdown; and the upstream registry's reaper, stopped by reg.Close.
+// run waits for all of them to return.
+func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready chan<- listening) error {
 	reg := upstream.NewRegistry(cfg.Upstream.Options())
 	// Deferred first, so it runs after the server has closed every client
 	// connection: requests that end later close their upstream connection
@@ -161,13 +177,39 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 		addrs = append(addrs, ln.Addr().String())
 		modes = append(modes, l.Mode)
 	}
+	var adm *admin.Server
+	if a := snap.Admin; a.Address != "" {
+		adm, err = admin.Listen(ctx, admin.Options{
+			Address:              a.Address,
+			MutexProfileFraction: a.MutexProfileFraction,
+			BlockProfileRate:     a.BlockProfileRate,
+		}, logger)
+		if err != nil {
+			for _, l := range lns {
+				l.Close()
+			}
+			return err
+		}
+	}
 
 	srv := conn.NewServer(snap.Limits.MaxConns, logger)
+	// GOMAXPROCS follows the container's CPU limit (Go 1.25 and later), so
+	// it can be checked against the limit from here.
 	logger.Info("proxy listening", "version", version, "addrs", addrs, "modes", modes,
 		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
-		"max_conns", snap.Limits.MaxConns)
+		"max_conns", snap.Limits.MaxConns,
+		"max_idle_per_backend", snap.Upstream.MaxIdlePerBackend, "upstream_idle_ms", snap.Upstream.IdleTimeout.Milliseconds(),
+		"gomaxprocs", runtime.GOMAXPROCS(0), "num_cpu", runtime.NumCPU())
+	started := listening{addrs: addrs}
+	adminc := make(chan error, 1)
+	if adm != nil {
+		started.admin = adm.Addr()
+		logger.Info("admin listening", "addr", started.admin, "paths", []string{"/debug/pprof/"},
+			"mutex_profile_fraction", snap.Admin.MutexProfileFraction, "block_profile_rate_ns", snap.Admin.BlockProfileRate)
+		go func() { adminc <- adm.Serve() }()
+	}
 	if ready != nil {
-		ready <- addrs
+		ready <- started
 	}
 
 	errc := make(chan error, len(lns))
@@ -180,8 +222,19 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	case err := <-errc:
 		pending--
 		serveErr = fmt.Errorf("serve: %w", err)
+	case err := <-adminc:
+		adm = nil
+		serveErr = err
 	case <-ctx.Done():
 		logger.Info("proxy shutting down", "open_conns", srv.Tracker().Len())
+	}
+	if adm != nil {
+		sctx, cancel := context.WithTimeout(context.Background(), adminShutdownTimeout)
+		_ = adm.Shutdown(sctx)
+		cancel()
+		if err := <-adminc; err != nil && serveErr == nil {
+			serveErr = err
+		}
 	}
 	srv.Close()
 	for range pending {

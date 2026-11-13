@@ -303,12 +303,13 @@ backends = [{ address = %q }]
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ready := make(chan []string, 1)
+	ready := make(chan listening, 1)
 	errc := make(chan error, 1)
 	go func() { errc <- run(ctx, cfg, slog.New(slog.DiscardHandler), ready) }()
 	var addrs []string
 	select {
-	case addrs = <-ready:
+	case l := <-ready:
+		addrs = l.addrs
 	case err := <-errc:
 		t.Fatalf("run exited early: %v", err)
 	}
@@ -413,4 +414,56 @@ backends = [{ address = "127.0.0.1:1" }]
 		t.Fatalf("first listener left open: %v", err)
 	}
 	ln.Close()
+}
+
+// TestRunAdmin: the admin listener serves pprof on its loopback address
+// and stops with the proxy.
+func TestRunAdmin(t *testing.T) {
+	cfg := parse(t, `
+default_pool = "p"
+
+[[listener]]
+address = "127.0.0.1:0"
+mode = "http"
+
+[pool.p]
+backends = [{ address = "127.0.0.1:1" }]
+
+[admin]
+address = "127.0.0.1:0"
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan listening, 1)
+	errc := make(chan error, 1)
+	go func() { errc <- run(ctx, cfg, slog.New(slog.DiscardHandler), ready) }()
+	var l listening
+	select {
+	case l = <-ready:
+	case err := <-errc:
+		t.Fatalf("run exited early: %v", err)
+	}
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Get("http://" + l.admin + "/debug/pprof/goroutine?debug=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	c.CloseIdleConnections()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "goroutine profile") {
+		t.Fatalf("pprof: status %d body %.80q", resp.StatusCode, body)
+	}
+	cancel()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after cancel")
+	}
+	if _, err := net.DialTimeout("tcp", l.admin, time.Second); err == nil {
+		t.Fatal("admin listener still open after run returned")
+	}
 }

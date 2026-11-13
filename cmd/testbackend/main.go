@@ -24,10 +24,11 @@ import (
 const shutdownTimeout = 5 * time.Second
 
 type options struct {
-	addr     string
-	name     string
-	delayMS  int
-	failRate float64
+	addr        string
+	name        string
+	delayMS     int
+	failRate    float64
+	healthzFail bool
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, error) {
@@ -40,6 +41,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&o.name, "name", host, "backend name, returned in the X-Backend header")
 	fs.IntVar(&o.delayMS, "delay-ms", 0, "milliseconds to wait before every response")
 	fs.Float64Var(&o.failRate, "fail-rate", 0, "probability in [0,1] that a request gets a 500")
+	fs.BoolVar(&o.healthzFail, "healthz-fail", false, "answer /healthz with 503 while every other endpoint works")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -66,10 +68,11 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 // ready, if non-nil, receives the bound address once the listener is open.
 func run(ctx context.Context, o options, logger *slog.Logger, ready chan<- string) error {
 	srv, err := testbackend.New(testbackend.Config{
-		Name:     o.name,
-		Delay:    time.Duration(o.delayMS) * time.Millisecond,
-		FailRate: o.failRate,
-		Logger:   logger,
+		Name:        o.name,
+		Delay:       time.Duration(o.delayMS) * time.Millisecond,
+		FailRate:    o.failRate,
+		HealthzFail: o.healthzFail,
+		Logger:      logger,
 	})
 	if err != nil {
 		return err
@@ -80,7 +83,7 @@ func run(ctx context.Context, o options, logger *slog.Logger, ready chan<- strin
 		return err
 	}
 	logger.Info("testbackend listening", "addr", ln.Addr().String(), "name", o.name,
-		"delay_ms", o.delayMS, "fail_rate", o.failRate)
+		"delay_ms", o.delayMS, "fail_rate", o.failRate, "healthz_fail", o.healthzFail)
 	if ready != nil {
 		ready <- ln.Addr().String()
 	}

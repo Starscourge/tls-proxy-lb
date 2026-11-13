@@ -15,11 +15,11 @@ import (
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 func TestParseFlags(t *testing.T) {
-	o, err := parseFlags([]string{"--port", "9001", "--name", "b2", "--delay-ms", "200", "--fail-rate", "0.25"}, io.Discard)
+	o, err := parseFlags([]string{"--port", "9001", "--name", "b2", "--delay-ms", "200", "--fail-rate", "0.25", "-healthz-fail"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := options{addr: ":9001", name: "b2", delayMS: 200, failRate: 0.25}
+	want := options{addr: ":9001", name: "b2", delayMS: 200, failRate: 0.25, healthzFail: true}
 	if o != want {
 		t.Fatalf("got %+v, want %+v", o, want)
 	}

@@ -9,7 +9,8 @@
 // Endpoints:
 //
 //	/         200 with a short text body naming the backend (catch-all path)
-//	/healthz  200 "ok"
+//	/healthz  200 "ok", or 503 while the backend is marked unhealthy
+//	          (Config.HealthzFail, SetHealthy)
 //	/echo     200 with the request body streamed back unchanged, flushed per read
 //	/slow     200 after sleeping ?ms=N milliseconds (default 5000)
 //	/bytes    200 with ?n=N bytes of a fixed pattern (see Pattern), sent with
@@ -17,7 +18,9 @@
 //	/stats    200 with Stats as JSON: connections accepted and open, requests
 //
 // Config.Delay and Config.FailRate apply to every endpoint, /healthz included,
-// so a backend started with FailRate 1 also fails its health checks. /stats
+// so a backend started with FailRate 1 also fails its health checks.
+// HealthzFail is the other way round: /healthz fails and every other
+// endpoint works, the case only active health checks can catch. /stats
 // is the exception: it is for the test watching the backend, so it is never
 // delayed, failed, logged or counted.
 package testbackend
@@ -57,6 +60,9 @@ type Config struct {
 	// FailRate is the probability, in [0, 1], that a request gets a 500
 	// instead of its normal response.
 	FailRate float64
+	// HealthzFail starts the backend with /healthz answering 503, while
+	// every other endpoint works. SetHealthy changes it.
+	HealthzFail bool
 	// Logger receives one line per request. Nil discards the log.
 	Logger *slog.Logger
 	// Record keeps every request in memory for Requests. Meant for in-process
@@ -104,6 +110,8 @@ type Server struct {
 	hmu      sync.Mutex
 	stopped  bool
 	inflight atomic.Int64
+	// healthDown makes /healthz answer 503.
+	healthDown atomic.Bool
 
 	// Connection and request counts for Stats, kept by the http.Server's
 	// ConnState hook and by serve.
@@ -130,6 +138,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	s := &Server{cfg: cfg, rand: cfg.Rand}
+	s.healthDown.Store(cfg.HealthzFail)
 	if s.rand == nil {
 		s.rand = rand.Float64
 	}
@@ -331,9 +340,17 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	if s.healthDown.Load() {
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	io.WriteString(w, "ok\n")
 }
+
+// SetHealthy makes /healthz answer 200 (true) or 503 (false). Other
+// endpoints are not affected.
+func (s *Server) SetHealthy(ok bool) { s.healthDown.Store(!ok) }
 
 // echo streams the request body back. A known request length is mirrored in
 // Content-Length; otherwise the response is chunked.

@@ -66,7 +66,11 @@ memory.
 - Slow read: the stall timeout (`client_io_ms`) closes a client that
   stops reading. One that reads slowly holds its connection, its
   goroutine, its fixed buffers and an upstream connection, which
-  `max_conns` and `max_conns_per_ip` bound.
+  `max_conns` and `max_conns_per_ip` bound. Each costs about 165 KB of
+  heap while its write is blocked (measured: 835 MiB for 5,021), so size
+  `max_conns` to memory: the default 10,000 allows about 1.6 GiB. There
+  is no minimum rate for responses; one would cap how long a slow reader
+  holds its share, at the risk of cutting off slow mobile clients.
 - Idle keep-alive connections are closed after `idle_ms`.
 
 *Tests*: `bench/phase8/slowhttptest.sh` runs all three at 5,000

@@ -1963,3 +1963,42 @@ operators start as root and drop privileges outside it.
   stay within the 5-minute lookback with no staleness marker, and the sum
   went backwards.
 - `govulncheck` runs in CI, pinned like `staticcheck`.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H); the lab proxy has 2
+CPUs.
+
+- Smuggling corpus: all 46 payloads refused over HTTP and HTTPS, none
+  reaching the backend; the 5 controls served. The Phase 7 proxy forwarded
+  15 of them, and in 11 the backend logged the smuggled request
+  (`docs/SMUGGLING.md`).
+- Fuzzing: 4,517, 4,513 and 4,468 CPU-seconds for `FuzzRequestPath`,
+  `FuzzResponse` and `FuzzConfig` (35.0, 22.6 and 14.2 million
+  executions), no open failures; three bugs found and fixed on the way
+  (`docs/FUZZING.md`).
+- slowhttptest, 5,001 to 5,022 slow connections per attack from three
+  addresses, 100 normal requests per second throughout:
+
+  | Attack | Normal p50 / p99 | Failed | Open at 30 s | Peak goroutines | Peak heap |
+  | --- | --- | --- | --- | --- | --- |
+  | none (baseline) | 0.88 / 1.53 ms | 0 of 3,000 | | 16 | 2 MiB |
+  | slow headers | 0.85 / 1.43 ms | 0 of 4,500 | 20 | 5,018 | 160 MiB |
+  | slow body | 0.88 / 1.71 ms | 0 of 4,500 | 20 | 10,033 | 535 MiB |
+  | slow read | 1.12 / 1.84 ms | 0 of 4,501 | 5,021 | 5,039 | 835 MiB |
+
+  The header deadline and the minimum body rate cut the first two off (the
+  20 open at 30 s are the normal client's); slow readers are held for the
+  whole run, at about 165 KB of heap each. Goroutines were back to 17
+  within 20 s of each attack.
+
+  The first run failed: 591 normal requests got 503 during the slow-body
+  attack. The attack posted to `/echo`, which answers at once; when the
+  minimum rate cut a client off, the writer closed the upstream
+  connection, the response relay then failed reading it, and the proxy
+  reported that as a backend failure. Three per backend ejected all three.
+  A failed client body no longer counts against the backend
+  (`TestClientBodyFailureIsNotBackendFailure`). Without the minimum rate
+  this took a 60-second stall per request, so it had gone unnoticed.
+- Allocations per request unchanged from Phase 4: 35 for a reused GET,
+  42 for a POST.

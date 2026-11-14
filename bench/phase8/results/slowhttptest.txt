@@ -1,0 +1,56 @@
+# Phase 8: slowhttptest, 3 x 1667 slow connections per attack, against the lab proxy
+date:     2026-11-14T10:27:41Z
+commit:   5daa38a
+proxy:    lab/proxy.toml (2 CPUs): header_read_ms 5000, client_io_ms 60000,
+          min_body_rate 500 after body_grace_ms 10000, max_conns_per_ip 2048
+attacks:  slowhttptest 1.8.2 from 10.0.0.31-33, 60s each:
+          headers: slowhttptest -H -c 1667 -r 1000 -i 4 -x 24 -l 60 -u https://10.0.0.10:8443/
+          body: slowhttptest -B -c 1667 -r 1000 -i 2 -x 8 -s 8192 -l 60 -u https://10.0.0.10:8443/echo
+          read: slowhttptest -X -c 1667 -r 1000 -w 256 -y 512 -n 5 -z 32 -k 1 -l 60 -u https://10.0.0.10:8443/bytes?n=1048576
+normal:   k6 from loadgen2, 100/s constant arrival rate, GET https://10.0.0.10:8443/
+
+baseline: p50 0.88 ms, p99 1.53 ms, 0 failed of 3000;
+          16 goroutines, 2 MiB heap in use, 11 MiB resident
+
+attack    p50_ms  p99_ms  failed/total peak_conns conns@30s  peak_gor heap_mib  rss_mib gor_after
+headers     0.85    1.43       0/4500        5001       20      5018      160      188        17
+body        0.88    1.71       0/4500        5018       20     10033      535      446        17
+read        1.12    1.84       0/4501        5022     5021      5039      835      763        17
+
+peak_conns, peak_gor, heap_mib, rss_mib: maxima of proxy_client_connections,
+go_goroutines, go_memstats_heap_inuse_bytes and process_resident_memory_bytes, sampled
+each second; conns@30s: open connections 30 s into the attack; gor_after: goroutines
+20 s after. Resident memory includes heap the Go runtime has not returned to the OS yet.
+slowhttptest's own "connected" count below is its view: over TLS it does not notice the
+proxy closing a connection until it next writes, so conns@30s is the proxy's view.
+Limits: no normal request failed, p99 <= 2 x baseline + 5 ms, goroutines <= 3 per
+connection + 200, resident memory <= 1 GiB, goroutines after <= baseline + 50.
+
+## headers: slowhttptest's last report, attacker 1
+          number of connections:            1667
+          test duration:                    60 seconds
+          pending:             0
+          connected:           526
+          error:               0
+          closed:              1141
+          service available:   YES
+
+## body: slowhttptest's last report, attacker 1
+          number of connections:            1667
+          test duration:                    60 seconds
+          pending:             0
+          connected:           1174
+          error:               0
+          closed:              493
+          service available:   YES
+
+## read: slowhttptest's last report, attacker 1
+          number of connections:           1667
+          test duration:                   60 seconds
+          pending:             0
+          connected:           1667
+          error:               0
+          closed:              0
+          service available:   YES
+
+RESULT: PASS

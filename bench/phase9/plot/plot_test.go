@@ -397,6 +397,80 @@ func TestParseWrk(t *testing.T) {
 	}
 }
 
+func readTestdata(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func fanOut(outs ...string) string {
+	var b strings.Builder
+	for i, o := range outs {
+		fmt.Fprintf(&b, "==== process %d of %d\n%s", i+1, len(outs), o)
+	}
+	return b.String()
+}
+
+func near(got, want, tol float64) bool { return math.Abs(got-want) <= tol*want }
+
+func TestParseWrkProcesses(t *testing.T) {
+	fast, slow := readTestdata(t, "wrk2.txt"), readTestdata(t, "wrk2-slow.txt")
+	one, err := ParseWrk(strings.NewReader(fast))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The merge of one spectrum is wrk2's own percentiles.
+	_, sp, _ := parseWrkOne(fast)
+	for _, c := range []struct{ p, want float64 }{{50, one.P50}, {90, one.P90}, {99, one.P99}, {99.9, one.P999}} {
+		if got := mergedPercentile([][]specPoint{sp}, c.p); !near(got, c.want, 0.02) {
+			t.Errorf("p%v of one spectrum: %v, wrk2 says %v", c.p, got, c.want)
+		}
+	}
+
+	// Two identical processes: everything summed, the percentiles kept.
+	two, err := ParseWrk(strings.NewReader(fanOut(fast, fast)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if two.RPS != 2*one.RPS || two.Requests != 2*one.Requests || two.Errors != 0 {
+		t.Fatalf("sums: %+v of %+v", two, one)
+	}
+	if !near(two.P50, one.P50, 0.02) || !near(two.P99, one.P99, 0.02) || !near(two.P999, one.P999, 0.02) {
+		t.Fatalf("percentiles of two copies %+v, of one %+v", two, one)
+	}
+
+	// A fast and a slow process: each percentile between theirs, and the
+	// slow one's tail dominates the merged p99.
+	s1, _ := ParseWrk(strings.NewReader(slow))
+	mix, err := ParseWrk(strings.NewReader(fanOut(fast, slow)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mix.P50 < one.P50 || mix.P50 > s1.P50 || mix.P99 < one.P99 || mix.P99 > s1.P99 {
+		t.Fatalf("merged p50 %v p99 %v outside fast %v/%v and slow %v/%v", mix.P50, mix.P99, one.P50, one.P99, s1.P50, s1.P99)
+	}
+	if mix.P99 < 10*one.P99 {
+		t.Fatalf("merged p99 %v: the slow process's 10%% tail is 5%% of all, so p99 is in it", mix.P99)
+	}
+
+	// wrk prints no spectrum: summed, no percentiles.
+	w, err := ParseWrk(strings.NewReader(fanOut(wrkOut, wrkOut)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.RPS != 2*48044.72 || w.Errors != 24 || !math.IsNaN(w.P99) {
+		t.Fatalf("two wrk processes: %+v", w)
+	}
+
+	// A failed process fails the run, by number.
+	if _, err := ParseWrk(strings.NewReader(fanOut(wrkOut, "unable to connect\n"))); err == nil || !strings.Contains(err.Error(), "process 2 of 2") {
+		t.Fatalf("err %v, want process 2 of 2 named", err)
+	}
+}
+
 func TestReadBench(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, s string) {

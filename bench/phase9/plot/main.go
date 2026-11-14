@@ -7,6 +7,7 @@
 //	plot slow  -fault F -backend ADDR -name NAME -svg OUT name=dir ...
 //	plot bench -dir DIR
 //	plot variants -dir DIR -title T -svg NAME [-order a,b,...]
+//	plot wrk FILE...
 //
 // Each subcommand prints its summary to stdout, writes its graph, and
 // exits 1 when the run broke a claim the experiment makes (a failed
@@ -20,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: plot clock|kill|slow|bench|variants [flags]")
+		fmt.Fprintln(os.Stderr, "usage: plot clock|kill|slow|bench|variants|wrk [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -35,6 +36,8 @@ func main() {
 		err = cmdBench(os.Args[2:])
 	case "variants":
 		err = cmdVariants(os.Args[2:])
+	case "wrk":
+		err = cmdWrk(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "plot: unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)

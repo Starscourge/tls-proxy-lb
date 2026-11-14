@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,15 +31,84 @@ var (
 	reNon2xx    = regexp.MustCompile(`Non-2xx or 3xx responses: (\d+)`)
 )
 
-// ParseWrk reads wrk's or wrk2's output, run with --latency.
+// ParseWrk reads the output of a wrk or wrk2 run with --latency: of one
+// process, or of several run side by side (benchlib.sh's fan-out, each
+// process's output under a "==== process I of N" line). Several are
+// summed (requests per second, requests, errors), and their percentiles
+// are those of the merged wrk2 spectra: NaN when a part has none (wrk).
 func ParseWrk(r io.Reader) (WrkResult, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return WrkResult{}, err
+	}
+	parts := splitProcesses(string(b))
+	if len(parts) == 1 {
+		res, _, err := parseWrkOne(parts[0])
+		return res, err
+	}
+	nan := math.NaN()
+	sum := WrkResult{P50: nan, P90: nan, P99: nan, P999: nan}
+	var spectra [][]specPoint
+	for i, part := range parts {
+		w, sp, err := parseWrkOne(part)
+		if err != nil {
+			return sum, fmt.Errorf("process %d of %d: %w", i+1, len(parts), err)
+		}
+		sum.RPS += w.RPS
+		sum.Requests += w.Requests
+		sum.Errors += w.Errors
+		if len(sp) > 0 {
+			spectra = append(spectra, sp)
+		}
+	}
+	if len(spectra) == len(parts) {
+		sum.P50 = mergedPercentile(spectra, 50)
+		sum.P90 = mergedPercentile(spectra, 90)
+		sum.P99 = mergedPercentile(spectra, 99)
+		sum.P999 = mergedPercentile(spectra, 99.9)
+	}
+	return sum, nil
+}
+
+var reProcess = regexp.MustCompile(`^==== process \d+ of \d+$`)
+
+// splitProcesses splits a fan-out's output at its process lines; output
+// without them is one part.
+func splitProcesses(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	marked := false
+	for line := range strings.Lines(s) {
+		if reProcess.MatchString(strings.TrimRight(line, "\n")) {
+			if marked {
+				parts = append(parts, cur.String())
+			}
+			cur.Reset()
+			marked = true
+			continue
+		}
+		cur.WriteString(line)
+	}
+	return append(parts, cur.String())
+}
+
+// specPoint is a line of wrk2's detailed percentile spectrum: Count
+// requests took at most Value ms.
+type specPoint struct {
+	Value float64
+	Count float64
+}
+
+var reSpectrum = regexp.MustCompile(`^\s*(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+)\s+(?:\d+\.\d+|inf)\s*$`)
+
+func parseWrkOne(out string) (WrkResult, []specPoint, error) {
 	res := WrkResult{P50: math.NaN(), P90: math.NaN(), P99: math.NaN(), P999: math.NaN()}
+	var spec []specPoint
 	seenRPS := false
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := sc.Text()
-		// wrk2's "Detailed Percentile spectrum" lines carry no % sign, so
-		// only the summary's percentiles match.
+	for line := range strings.Lines(out) {
+		line = strings.TrimRight(line, "\n")
+		// The spectrum's lines carry no % sign, so only the summary's
+		// percentiles match here.
 		if m := reWrkPct.FindStringSubmatch(line); m != nil {
 			p, _ := strconv.ParseFloat(m[1], 64)
 			v, _ := strconv.ParseFloat(m[2], 64)
@@ -55,6 +123,12 @@ func ParseWrk(r io.Reader) (WrkResult, error) {
 			case 99.9:
 				res.P999 = v
 			}
+			continue
+		}
+		if m := reSpectrum.FindStringSubmatch(line); m != nil {
+			v, _ := strconv.ParseFloat(m[1], 64)
+			n, _ := strconv.ParseFloat(m[3], 64)
+			spec = append(spec, specPoint{v, n})
 			continue
 		}
 		if m := reRequests.FindStringSubmatch(line); m != nil {
@@ -73,18 +147,68 @@ func ParseWrk(r io.Reader) (WrkResult, error) {
 		if v, ok := strings.CutPrefix(line, "Requests/sec:"); ok {
 			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 			if err != nil {
-				return res, fmt.Errorf("parsing requests per second: %w", err)
+				return res, nil, fmt.Errorf("parsing requests per second: %w", err)
 			}
 			res.RPS, seenRPS = f, true
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return res, err
-	}
 	if !seenRPS {
-		return res, errors.New("no Requests/sec line: the run failed")
+		return res, nil, errors.New("no Requests/sec line: the run failed")
 	}
-	return res, nil
+	return res, spec, nil
+}
+
+// countAt is how many of a spectrum's requests took at most v ms,
+// interpolated linearly between its lines.
+func countAt(sp []specPoint, v float64) float64 {
+	if v < sp[0].Value {
+		return 0
+	}
+	for i := 1; i < len(sp); i++ {
+		if v < sp[i].Value {
+			a, b := sp[i-1], sp[i]
+			return a.Count + (b.Count-a.Count)*(v-a.Value)/(b.Value-a.Value)
+		}
+	}
+	return sp[len(sp)-1].Count
+}
+
+// mergedPercentile is the p-th percentile, in ms, of the requests of all
+// the spectra together: the least latency at which their summed counts,
+// interpolated between the spectra's lines, reach p% of the total. It is
+// as fine as the spectra, which wrk2 prints at five lines per halving of
+// the remaining percentile.
+func mergedPercentile(spectra [][]specPoint, p float64) float64 {
+	var values []float64
+	total := 0.0
+	for _, sp := range spectra {
+		total += sp[len(sp)-1].Count
+		for _, pt := range sp {
+			values = append(values, pt.Value)
+		}
+	}
+	slices.Sort(values)
+	values = slices.Compact(values)
+	at := func(v float64) float64 {
+		n := 0.0
+		for _, sp := range spectra {
+			n += countAt(sp, v)
+		}
+		return n
+	}
+	target := p / 100 * total
+	prev, prevN := 0.0, 0.0
+	for _, v := range values {
+		n := at(v)
+		if n >= target {
+			if n == prevN {
+				return v
+			}
+			return prev + (v-prev)*(target-prevN)/(n-prevN)
+		}
+		prev, prevN = v, n
+	}
+	return values[len(values)-1]
 }
 
 // Meta is a run's key=value measurements from bench.sh.
@@ -412,4 +536,26 @@ func cmdBench(args []string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(*dir, "bench-latency.svg"), []byte(lat.SVG()), 0o644)
+}
+
+// cmdWrk prints, per wrk output file, its requests per second (a whole
+// number) and its p99 in ms ("NaN" without one), for the scripts' progress
+// lines and medians.
+func cmdWrk(files []string) error {
+	if len(files) == 0 {
+		return errors.New("usage: plot wrk FILE [FILE]")
+	}
+	for _, name := range files {
+		f, err := os.Open(name)
+		if err != nil {
+			return err
+		}
+		w, err := ParseWrk(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		fmt.Printf("%d %.2f\n", int64(w.RPS), w.P99)
+	}
+	return nil
 }

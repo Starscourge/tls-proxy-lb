@@ -8,7 +8,8 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
         check-config lab-up lab-down lab-check netem-check prom-check wrk-race bench-lb testssl \
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
-        bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race clean
+        bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race \
+        bench-reload bench-reload-control stop-check clean
 
 all: build test lint
 
@@ -102,6 +103,14 @@ bench-ratelimit-k6:      # k6 at twice the limit plus a second client, in the la
 	bench/phase6/k6.sh
 bench-ratelimit-race:    # -race run and mutex profile with the rate-limit table under load
 	bench/phase6/race-profile.sh
+
+# Phase 7 "Done when" items; results in bench/phase7/results/.
+bench-reload:            # SIGHUP every second, alternating pool membership, during 60 s of wrk
+	bench/phase7/reload-wrk.sh
+bench-reload-control:    # the same wrk run with no SIGHUP
+	RELOADS=off bench/phase7/reload-wrk.sh
+stop-check:              # docker stop drains and exits 0 inside the grace period (lab must be up)
+	lab/stop-check.sh --no-up
 
 clean:
 	rm -rf $(BIN)

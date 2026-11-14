@@ -56,6 +56,11 @@ jobs:
       - name: lab check
         run: lab/check-lab.sh
 
+      # After the lab check: it restarts the proxy, which resets the
+      # counters the Prometheus check compares.
+      - name: docker stop drains inside the grace period
+        run: lab/stop-check.sh --no-up
+
       - name: logs on failure
         if: failure()
         run: docker compose -f lab/docker-compose.yml logs

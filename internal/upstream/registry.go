@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"sync"
@@ -18,7 +19,7 @@ const minReapInterval = 10 * time.Millisecond
 // for the same addresses and gets the same pools.
 //
 // Goroutines: one reaper, started by NewRegistry when reuse is on and
-// stopped by Close. It wakes every half idle timeout and closes connections
+// stopped by Close or by the end of the context it was given. It wakes every half idle timeout and closes connections
 // past it, so idle backends do not keep sockets open. Get skips expired
 // connections on its own; the reaper only bounds how long they linger.
 type Registry struct {
@@ -28,14 +29,20 @@ type Registry struct {
 	pools  map[string]*Pool
 	closed bool
 
-	stop chan struct{}
+	ctx  context.Context
+	stop context.CancelFunc
 	done chan struct{}
 }
 
 // NewRegistry returns an empty registry whose pools use opts. Close must be
 // called to stop its reaper.
-func NewRegistry(opts Options) *Registry {
-	r := &Registry{opts: opts, pools: make(map[string]*Pool), stop: make(chan struct{}), done: make(chan struct{})}
+func NewRegistry(opts Options) *Registry { return NewRegistryContext(context.Background(), opts) }
+
+// NewRegistryContext is NewRegistry with a reaper that also stops when ctx
+// ends. Close must still be called, to wait for it and close the pools.
+func NewRegistryContext(ctx context.Context, opts Options) *Registry {
+	r := &Registry{opts: opts, pools: make(map[string]*Pool), done: make(chan struct{})}
+	r.ctx, r.stop = context.WithCancel(ctx)
 	if opts.MaxIdle <= 0 {
 		close(r.done)
 		return r
@@ -44,6 +51,9 @@ func NewRegistry(opts Options) *Registry {
 	go r.reaper(interval)
 	return r
 }
+
+// Options returns the settings every pool is made with.
+func (r *Registry) Options() Options { return r.opts }
 
 // Pool returns the pool for addr, creating it on first use. It is called
 // while building a snapshot, not per request.
@@ -59,6 +69,38 @@ func (r *Registry) Pool(addr string) *Pool {
 		r.pools[addr] = p
 	}
 	return p
+}
+
+// Lookup returns the pool for addr, or nil if there is none. Unlike Pool it
+// never creates one, so it is safe to call for an address that may have
+// been removed.
+func (r *Registry) Lookup(addr string) *Pool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pools[addr]
+}
+
+// Retain closes and forgets the pool of every address not in addrs, after
+// a reload removed it. A request still using a connection from such a pool
+// finishes, and the connection is closed instead of parked. If the address
+// comes back, Pool makes it a new pool.
+func (r *Registry) Retain(addrs []string) {
+	keep := make(map[string]struct{}, len(addrs))
+	for _, a := range addrs {
+		keep[a] = struct{}{}
+	}
+	var removed []*Pool
+	r.mu.Lock()
+	for a, p := range r.pools {
+		if _, ok := keep[a]; !ok {
+			removed = append(removed, p)
+			delete(r.pools, a)
+		}
+	}
+	r.mu.Unlock()
+	for _, p := range removed {
+		p.Close()
+	}
 }
 
 // Pools returns every pool, sorted by address.
@@ -82,7 +124,7 @@ func (r *Registry) Close() {
 	r.closed = true
 	pools := r.snapshot()
 	r.mu.Unlock()
-	close(r.stop)
+	r.stop()
 	<-r.done
 	for _, p := range pools {
 		p.Close()
@@ -104,7 +146,7 @@ func (r *Registry) reaper(interval time.Duration) {
 	defer t.Stop()
 	for {
 		select {
-		case <-r.stop:
+		case <-r.ctx.Done():
 			return
 		case now := <-t.C:
 			r.mu.Lock()

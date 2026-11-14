@@ -75,11 +75,17 @@ upstream_response_ms = 4000
 idle_ms              = 30000
 client_io_ms         = 15000
 shutdown_ms          = 0
+body_grace_ms        = 7000
 
 [limits]
 max_conns        = 500
 max_header_bytes = 8192
 max_conns_per_ip = 50
+max_header_count = 64
+max_request_line = 4096
+max_body_bytes   = 1048576
+max_requests_per_conn = 0
+min_body_rate    = 0
 
 [rate_limit]
 rate        = 0.5
@@ -142,9 +148,11 @@ func TestParseFull(t *testing.T) {
 			ClientIO:         15 * time.Second,
 			UpstreamConnect:  300 * time.Millisecond,
 			UpstreamResponse: 4 * time.Second,
+			BodyGrace:        7 * time.Second,
 			Shutdown:         0,
 		},
-		Limits:    Limits{MaxConns: 500, MaxHeaderBytes: 8192, MaxConnsPerIP: 50},
+		Limits: Limits{MaxConns: 500, MaxHeaderBytes: 8192, MaxConnsPerIP: 50,
+			MaxHeaderCount: 64, MaxRequestLine: 4096, MaxBodyBytes: 1 << 20, MaxRequestsPerConn: 0, MinBodyRate: 0},
 		RateLimit: RateLimit{Default: ratelimit.Limit{Rate: 0.5, Burst: 3}, MaxEntries: 2560, Sweep: 500 * time.Millisecond},
 		Upstream:  Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second, MaxRetries: 2},
 		Health: health.Options{
@@ -299,6 +307,10 @@ func TestParseRejects(t *testing.T) {
 		{"timeout huge", base + route + pool + "[timeouts]\nupstream_response_ms = 86400001\n", "timeouts.upstream_response_ms: must be from 1"},
 		{"max_conns zero", base + route + pool + "[limits]\nmax_conns = 0\n", "limits.max_conns: must be from 1 to 10000000, got 0"},
 		{"max_header_bytes huge", base + route + pool + "[limits]\nmax_header_bytes = 1073741824\n", "limits.max_header_bytes: must be from 1 to 16777216"},
+		{"max_body_bytes negative", base + route + pool + "[limits]\nmax_body_bytes = -1\n", "limits.max_body_bytes: must be from 0 (no limit) to 1125899906842624, got -1"},
+		{"max_header_count huge", base + route + pool + "[limits]\nmax_header_count = 100001\n", "limits.max_header_count: must be from 0 (no limit) to 100000"},
+		{"min_body_rate negative", base + route + pool + "[limits]\nmin_body_rate = -5\n", "limits.min_body_rate: must be from 0"},
+		{"body grace zero", base + route + pool + "[timeouts]\nbody_grace_ms = 0\n", "timeouts.body_grace_ms: must be from 1"},
 		{"shutdown negative", base + route + pool + "[timeouts]\nshutdown_ms = -1\n", "timeouts.shutdown_ms: must be from 0 to 86400000 milliseconds, got -1"},
 		{"handshake zero", base + route + pool + "[timeouts]\nhandshake_ms = 0\n", "timeouts.handshake_ms: must be from 1"},
 		{"max_idle negative", base + route + pool + "[upstream]\nmax_idle_per_backend = -1\n", "upstream.max_idle_per_backend: must be from 0 to 100000, got -1"},
@@ -334,7 +346,7 @@ func TestParseRejects(t *testing.T) {
 		{"https route without cert", "[[listener]]\naddress = \":443\"\n" + route + pool, "route[0].cert: is required: an https listener serves this host and [tls] has no default_cert"},
 		{"trusted proxy not an address", "trusted_proxies = [\"10.0.0.0/8\", \"proxy.local\"]\n" + base + route + pool, `trusted_proxies[1]: "proxy.local" is not an IP address or CIDR prefix`},
 		{"trusted proxy bad prefix", "trusted_proxies = [\"10.0.0.0/40\"]\n" + base + route + pool, `trusted_proxies[0]: "10.0.0.0/40" is not`},
-		{"max_conns_per_ip negative", base + route + pool + "[limits]\nmax_conns_per_ip = -1\n", "limits.max_conns_per_ip: must be from 0 (no cap) to 10000000, got -1"},
+		{"max_conns_per_ip negative", base + route + pool + "[limits]\nmax_conns_per_ip = -1\n", "limits.max_conns_per_ip: must be from 0 (no limit) to 10000000, got -1"},
 		{"rate without burst", base + route + pool + "[rate_limit]\nrate = 10\n", "rate_limit.burst: is required when rate is set"},
 		{"rate negative", base + route + pool + "[rate_limit]\nrate = -1\nburst = 1\n", "rate_limit.rate: must be 0 (off) or from 0.001 to 1e+09 requests per second, got -1"},
 		{"rate tiny", base + route + pool + "[rate_limit]\nrate = 0.0001\nburst = 1\n", "rate_limit.rate: must be 0 (off) or from 0.001"},

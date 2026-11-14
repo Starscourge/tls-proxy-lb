@@ -107,3 +107,6 @@ sweep_ms    = 10000
 # runs at concurrency 1,000 from the single loadgen.
 [limits]
 max_conns_per_ip = 2048
+# The test backends' /echo streams, but a real backend may read a body
+# whole: cap what reaches it.
+max_body_bytes   = 104857600

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
@@ -115,6 +116,9 @@ type Timeouts struct {
 	// request byte is sent, and any stall while writing the request to or
 	// reading the response from the backend.
 	UpstreamResponse time.Duration
+	// BodyGrace is how long a request body may take before
+	// Limits.MinBodyRate applies to it.
+	BodyGrace time.Duration
 	// Shutdown is how long open connections may take to finish after
 	// SIGTERM before the rest are closed. Zero closes them at once. The
 	// value in force is the current snapshot's when the signal arrives.
@@ -133,6 +137,7 @@ func DefaultTimeouts() Timeouts {
 		ClientIO:         60 * time.Second,
 		UpstreamConnect:  1 * time.Second,
 		UpstreamResponse: 10 * time.Second,
+		BodyGrace:        10 * time.Second,
 		Shutdown:         8 * time.Second,
 	}
 }
@@ -153,6 +158,7 @@ func (t Timeouts) Validate() error {
 		{"ClientIO", t.ClientIO},
 		{"UpstreamConnect", t.UpstreamConnect},
 		{"UpstreamResponse", t.UpstreamResponse},
+		{"BodyGrace", t.BodyGrace},
 	} {
 		if f.d <= 0 {
 			return fmt.Errorf("timeout %s must be positive, got %v", f.name, f.d)
@@ -169,16 +175,47 @@ type Limits struct {
 	// MaxHeaderBytes caps a request's line plus headers; larger requests
 	// get 431.
 	MaxHeaderBytes int
+	// MaxHeaderCount caps the header fields in a request (431). Zero is no
+	// cap.
+	MaxHeaderCount int64
+	// MaxRequestLine caps the request line in bytes (414). Zero is no cap
+	// beyond MaxHeaderBytes.
+	MaxRequestLine int64
+	// MaxBodyBytes caps a request body (413): a Content-Length over it is
+	// refused before anything is sent upstream, and a chunked body is cut
+	// off when it passes it. Zero, the default, is no cap: bodies stream
+	// through fixed buffers, so their size costs the proxy nothing; set it
+	// for backends that read bodies whole.
+	MaxBodyBytes int64
+	// MaxRequestsPerConn is how many requests one client connection may
+	// carry; the last response says Connection: close. Zero is no cap.
+	MaxRequestsPerConn int64
+	// MinBodyRate is the slowest a request body may arrive, in bytes per
+	// second averaged from its start, once Timeouts.BodyGrace has passed
+	// (408). Zero turns it off.
+	MinBodyRate int64
 	// MaxConnsPerIP is the most client connections open at once from one
 	// address (an IPv6 /64), checked at accept before the TLS handshake.
 	// Trusted proxies are exempt. Zero means no cap. Like MaxConns, a
 	// reload applies it to later accepts.
-	MaxConnsPerIP int
+	MaxConnsPerIP int64
 }
 
-// DefaultLimits returns the limits used when the file sets none.
+// DefaultLimits returns the limits used when the file sets none. The
+// header count follows Apache's LimitRequestFields, the request line
+// nginx's large_client_header_buffers, requests per connection nginx's
+// keepalive_requests, and the body rate Apache's mod_reqtimeout MinRate.
 func DefaultLimits() Limits {
-	return Limits{MaxConns: 10000, MaxHeaderBytes: 64 << 10}
+	return Limits{MaxConns: 10000, MaxHeaderBytes: 64 << 10, MaxHeaderCount: 100, MaxRequestLine: 8192,
+		MaxRequestsPerConn: 1000, MinBodyRate: 500}
+}
+
+// Request returns the limits httpx.ReadRequest enforces.
+func (l Limits) Request() httpx.RequestLimits {
+	return httpx.RequestLimits{
+		RawLimits:    httpx.RawLimits{MaxHeaderCount: int(l.MaxHeaderCount), MaxRequestLine: int(l.MaxRequestLine)},
+		MaxBodyBytes: l.MaxBodyBytes,
+	}
 }
 
 // RateLimit configures per-client token buckets.

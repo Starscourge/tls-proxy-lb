@@ -175,11 +175,17 @@ client_io_ms         = 60000    # longest stall on a client body or response
 upstream_connect_ms  = 1000
 upstream_response_ms = 10000
 shutdown_ms          = 8000     # SIGTERM drain before closing the rest; 0 = none
+body_grace_ms        = 10000    # before min_body_rate applies to a request body
 
 [limits]                        # optional; defaults shown
 max_conns        = 10000
 max_header_bytes = 65536
 max_conns_per_ip = 0            # per client address (IPv6: per /64), at accept; 0 = no cap
+max_header_count = 100          # 431 past it; 0 = no cap
+max_request_line = 8192         # 414 past it; 0 = no cap
+max_body_bytes   = 0            # 413 past it; 0 = no cap (bodies stream; cap for backends that buffer)
+max_requests_per_conn = 1000    # then Connection: close; 0 = no cap
+min_body_rate    = 500          # bytes/s a request body must average after body_grace_ms (408); 0 = off
 
 [rate_limit]                    # optional; defaults shown (limiting off)
 rate        = 0                 # requests per second per client, for routes that set none

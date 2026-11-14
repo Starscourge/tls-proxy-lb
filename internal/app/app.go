@@ -175,7 +175,7 @@ func (a *App) runtime() config.Runtime {
 }
 
 func trackerLimits(s *config.Snapshot) conn.Limits {
-	return conn.Limits{MaxConns: s.Limits.MaxConns, MaxPerIP: s.Limits.MaxConnsPerIP, Exempt: s.TrustedProxies}
+	return conn.Limits{MaxConns: s.Limits.MaxConns, MaxPerIP: int(s.Limits.MaxConnsPerIP), Exempt: s.TrustedProxies}
 }
 
 // closeRuntime stops the background goroutines and closes idle upstream

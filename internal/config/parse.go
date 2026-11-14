@@ -115,28 +115,39 @@ type fileTimeouts struct {
 	UpstreamConnectMS  int64 `toml:"upstream_connect_ms"`
 	UpstreamResponseMS int64 `toml:"upstream_response_ms"`
 	ShutdownMS         int64 `toml:"shutdown_ms"`
+	BodyGraceMS        int64 `toml:"body_grace_ms"`
 }
 
 type fileLimits struct {
 	MaxConns       int64 `toml:"max_conns"`
 	MaxHeaderBytes int64 `toml:"max_header_bytes"`
 	MaxConnsPerIP  int64 `toml:"max_conns_per_ip"`
+	// Phase 8.
+	MaxHeaderCount     int64 `toml:"max_header_count"`
+	MaxRequestLine     int64 `toml:"max_request_line"`
+	MaxBodyBytes       int64 `toml:"max_body_bytes"`
+	MaxRequestsPerConn int64 `toml:"max_requests_per_conn"`
+	MinBodyRate        int64 `toml:"min_body_rate"`
 }
 
 // Bounds on numeric settings, so a typo cannot ask for something absurd.
 const (
-	maxTimeoutMS      = 24 * 60 * 60 * 1000 // a day
-	maxMaxConns       = 10_000_000
-	maxMaxHeaderBytes = 16 << 20
-	maxMaxIdle        = 100_000
-	maxProfileRate    = 1_000_000_000
-	maxLogBuffer      = 16 << 20
-	maxLogFlushMS     = 60_000
-	maxRetries        = 2
-	maxRiseFall       = 100
-	maxPassive        = 10_000
-	maxHealthPath     = 1024
-	maxRateEntries    = 100_000_000
+	maxTimeoutMS       = 24 * 60 * 60 * 1000 // a day
+	maxMaxConns        = 10_000_000
+	maxMaxHeaderBytes  = 16 << 20
+	maxMaxIdle         = 100_000
+	maxProfileRate     = 1_000_000_000
+	maxLogBuffer       = 16 << 20
+	maxLogFlushMS      = 60_000
+	maxRetries         = 2
+	maxRiseFall        = 100
+	maxPassive         = 10_000
+	maxHealthPath      = 1024
+	maxRateEntries     = 100_000_000
+	maxHeaderCount     = 100_000
+	maxBodyBytes       = 1 << 50 // a petabyte: "no cap" is 0
+	maxRequestsPerConn = 100_000_000
+	maxMinBodyRate     = 1 << 30
 )
 
 // hashKeyClientIP and hashKeyHeaderPrefix are the forms of hash_key.
@@ -460,6 +471,7 @@ func (v *validator) timeouts(ft *fileTimeouts) Timeouts {
 		{"client_io_ms", ft.ClientIOMS, &t.ClientIO},
 		{"upstream_connect_ms", ft.UpstreamConnectMS, &t.UpstreamConnect},
 		{"upstream_response_ms", ft.UpstreamResponseMS, &t.UpstreamResponse},
+		{"body_grace_ms", ft.BodyGraceMS, &t.BodyGrace},
 	} {
 		if !v.md.IsDefined("timeouts", f.key) {
 			continue
@@ -501,12 +513,28 @@ func (v *validator) limits(fl *fileLimits) Limits {
 		}
 		*f.dst = int(f.n)
 	}
-	if v.md.IsDefined("limits", "max_conns_per_ip") {
-		if n := fl.MaxConnsPerIP; n < 0 || n > maxMaxConns {
-			v.errorf("limits.max_conns_per_ip", "must be from 0 (no cap) to %d, got %d", maxMaxConns, n)
-		} else {
-			l.MaxConnsPerIP = int(n)
+	// Settings where 0 turns the limit off.
+	for _, f := range []struct {
+		key string
+		n   int64
+		max int64
+		dst *int64
+	}{
+		{"max_conns_per_ip", fl.MaxConnsPerIP, maxMaxConns, &l.MaxConnsPerIP},
+		{"max_header_count", fl.MaxHeaderCount, maxHeaderCount, &l.MaxHeaderCount},
+		{"max_request_line", fl.MaxRequestLine, maxMaxHeaderBytes, &l.MaxRequestLine},
+		{"max_body_bytes", fl.MaxBodyBytes, maxBodyBytes, &l.MaxBodyBytes},
+		{"max_requests_per_conn", fl.MaxRequestsPerConn, maxRequestsPerConn, &l.MaxRequestsPerConn},
+		{"min_body_rate", fl.MinBodyRate, maxMinBodyRate, &l.MinBodyRate},
+	} {
+		if !v.md.IsDefined("limits", f.key) {
+			continue
 		}
+		if f.n < 0 || f.n > f.max {
+			v.errorf("limits."+f.key, "must be from 0 (no limit) to %d, got %d", f.max, f.n)
+			continue
+		}
+		*f.dst = f.n
 	}
 	return l
 }

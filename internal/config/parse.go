@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/textproto"
@@ -17,21 +18,37 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 )
 
 // The file format, as decoded. Every field is checked by validate.
 type file struct {
-	DefaultPool string              `toml:"default_pool"`
-	Listeners   []fileListener      `toml:"listener"`
-	Routes      []fileRoute         `toml:"route"`
-	Pools       map[string]filePool `toml:"pool"`
-	TLS         fileTLS             `toml:"tls"`
-	Timeouts    fileTimeouts        `toml:"timeouts"`
-	Limits      fileLimits          `toml:"limits"`
-	Upstream    fileUpstream        `toml:"upstream"`
-	Health      fileHealth          `toml:"health"`
-	Admin       fileAdmin           `toml:"admin"`
-	Log         fileLog             `toml:"log"`
+	DefaultPool    string              `toml:"default_pool"`
+	TrustedProxies []string            `toml:"trusted_proxies"`
+	Listeners      []fileListener      `toml:"listener"`
+	Routes         []fileRoute         `toml:"route"`
+	Pools          map[string]filePool `toml:"pool"`
+	TLS            fileTLS             `toml:"tls"`
+	Timeouts       fileTimeouts        `toml:"timeouts"`
+	Limits         fileLimits          `toml:"limits"`
+	RateLimit      fileRateLimit       `toml:"rate_limit"`
+	Upstream       fileUpstream        `toml:"upstream"`
+	Health         fileHealth          `toml:"health"`
+	Admin          fileAdmin           `toml:"admin"`
+	Log            fileLog             `toml:"log"`
+}
+
+type fileRateLimit struct {
+	Rate       float64 `toml:"rate"`
+	Burst      int64   `toml:"burst"`
+	MaxEntries int64   `toml:"max_entries"`
+	SweepMS    int64   `toml:"sweep_ms"`
+}
+
+// fileLimit is a route's rate_limit inline table.
+type fileLimit struct {
+	Rate  float64 `toml:"rate"`
+	Burst *int64  `toml:"burst"` // nil when absent
 }
 
 type fileLog struct {
@@ -73,10 +90,11 @@ type fileTLS struct {
 }
 
 type fileRoute struct {
-	Host string `toml:"host"`
-	Pool string `toml:"pool"`
-	Cert string `toml:"cert"`
-	Key  string `toml:"key"`
+	Host      string     `toml:"host"`
+	Pool      string     `toml:"pool"`
+	Cert      string     `toml:"cert"`
+	Key       string     `toml:"key"`
+	RateLimit *fileLimit `toml:"rate_limit"` // nil when absent
 }
 
 type filePool struct {
@@ -101,6 +119,7 @@ type fileTimeouts struct {
 type fileLimits struct {
 	MaxConns       int64 `toml:"max_conns"`
 	MaxHeaderBytes int64 `toml:"max_header_bytes"`
+	MaxConnsPerIP  int64 `toml:"max_conns_per_ip"`
 }
 
 // Bounds on numeric settings, so a typo cannot ask for something absurd.
@@ -116,6 +135,7 @@ const (
 	maxRiseFall       = 100
 	maxPassive        = 10_000
 	maxHealthPath     = 1024
+	maxRateEntries    = 100_000_000
 )
 
 // hashKeyClientIP and hashKeyHeaderPrefix are the forms of hash_key.
@@ -185,14 +205,16 @@ func (v *validator) errorf(field, format string, args ...any) {
 
 func (v *validator) config(f *file) *Config {
 	c := &Config{
-		Source:   v.file,
-		Timeouts: v.timeouts(&f.Timeouts),
-		Limits:   v.limits(&f.Limits),
-		Upstream: v.upstream(&f.Upstream),
-		Health:   v.health(&f.Health),
-		Admin:    v.admin(&f.Admin),
-		Log:      v.log(&f.Log),
+		Source:    v.file,
+		Timeouts:  v.timeouts(&f.Timeouts),
+		Limits:    v.limits(&f.Limits),
+		RateLimit: v.rateLimit(&f.RateLimit),
+		Upstream:  v.upstream(&f.Upstream),
+		Health:    v.health(&f.Health),
+		Admin:     v.admin(&f.Admin),
+		Log:       v.log(&f.Log),
 	}
+	c.TrustedProxies = v.trustedProxies(f.TrustedProxies)
 	c.Listeners = v.listeners(f.Listeners)
 	c.TLS = v.tls(&f.TLS)
 	c.Pools = v.pools(f.Pools)
@@ -407,9 +429,18 @@ func (v *validator) routes(rs []fileRoute, pools map[string]bool) []Route {
 			ok = false
 		}
 		cert, key := v.certPair(prefix+".cert", prefix+".key", r.Cert, r.Key)
+		var limit *ratelimit.Limit
+		if r.RateLimit != nil {
+			var burst int64
+			if r.RateLimit.Burst != nil {
+				burst = *r.RateLimit.Burst
+			}
+			l, lok := v.limit(prefix+".rate_limit", r.RateLimit.Rate, burst, r.RateLimit.Burst != nil)
+			limit, ok = &l, ok && lok
+		}
 		if ok {
 			seen[host] = i
-			out = append(out, Route{Host: host, Pool: r.Pool, Cert: cert, Key: key})
+			out = append(out, Route{Host: host, Pool: r.Pool, Cert: cert, Key: key, RateLimit: limit})
 		}
 	}
 	return out
@@ -461,7 +492,79 @@ func (v *validator) limits(fl *fileLimits) Limits {
 		}
 		*f.dst = int(f.n)
 	}
+	if v.md.IsDefined("limits", "max_conns_per_ip") {
+		if n := fl.MaxConnsPerIP; n < 0 || n > maxMaxConns {
+			v.errorf("limits.max_conns_per_ip", "must be from 0 (no cap) to %d, got %d", maxMaxConns, n)
+		} else {
+			l.MaxConnsPerIP = int(n)
+		}
+	}
 	return l
+}
+
+// trustedProxies parses the trusted_proxies list.
+func (v *validator) trustedProxies(list []string) ratelimit.Trusted {
+	out := make(ratelimit.Trusted, 0, len(list))
+	for i, s := range list {
+		t, err := ratelimit.ParseTrusted([]string{s})
+		if err != nil {
+			v.errorf(fmt.Sprintf("trusted_proxies[%d]", i), "%q is not an IP address or CIDR prefix", s)
+			continue
+		}
+		out = append(out, t...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// rateLimit validates the [rate_limit] table.
+func (v *validator) rateLimit(fr *fileRateLimit) RateLimit {
+	r := DefaultRateLimit()
+	if v.md.IsDefined("rate_limit", "rate") || v.md.IsDefined("rate_limit", "burst") {
+		r.Default, _ = v.limit("rate_limit", fr.Rate, fr.Burst, v.md.IsDefined("rate_limit", "burst"))
+	}
+	if v.md.IsDefined("rate_limit", "max_entries") {
+		if n := fr.MaxEntries; n < ratelimit.NumShards || n > maxRateEntries {
+			v.errorf("rate_limit.max_entries", "must be from %d to %d, got %d", ratelimit.NumShards, maxRateEntries, n)
+		} else {
+			r.MaxEntries = int(n)
+		}
+	}
+	if v.md.IsDefined("rate_limit", "sweep_ms") {
+		if ms := fr.SweepMS; ms <= 0 || ms > maxTimeoutMS {
+			v.errorf("rate_limit.sweep_ms", "must be from 1 to %d milliseconds, got %d", maxTimeoutMS, ms)
+		} else {
+			r.Sweep = time.Duration(ms) * time.Millisecond
+		}
+	}
+	return r
+}
+
+// limit validates a rate and burst under prefix. A rate of 0 is off and
+// needs no burst; any other rate needs one.
+func (v *validator) limit(prefix string, rate float64, burst int64, burstSet bool) (ratelimit.Limit, bool) {
+	if rate == 0 {
+		return ratelimit.Limit{}, true
+	}
+	ok := true
+	if math.IsNaN(rate) || rate < ratelimit.MinRate || rate > ratelimit.MaxRate {
+		v.errorf(prefix+".rate", "must be 0 (off) or from %g to %g requests per second, got %g", ratelimit.MinRate, ratelimit.MaxRate, rate)
+		ok = false
+	}
+	switch {
+	case !burstSet:
+		v.errorf(prefix+".burst", "is required when rate is set")
+		ok = false
+	case burst < 1 || burst > ratelimit.MaxBurst:
+		v.errorf(prefix+".burst", "must be from 1 to %d, got %d", ratelimit.MaxBurst, burst)
+		ok = false
+	}
+	if !ok {
+		return ratelimit.Limit{}, false
+	}
+	return ratelimit.Limit{Rate: rate, Burst: int(burst)}, true
 }
 
 func (v *validator) upstream(fu *fileUpstream) Upstream {

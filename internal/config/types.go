@@ -6,6 +6,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -21,14 +22,19 @@ type Config struct {
 	// DefaultPool serves hosts no route names. Empty means they get 404.
 	DefaultPool string
 	// Pools are sorted by name.
-	Pools    []Pool
-	TLS      TLS
-	Timeouts Timeouts
-	Limits   Limits
-	Upstream Upstream
-	Health   health.Options
-	Admin    Admin
-	Log      Log
+	Pools []Pool
+	// TrustedProxies are the peers whose X-Forwarded-For names the client,
+	// and who are exempt from the per-IP connection cap. Empty trusts no
+	// one.
+	TrustedProxies ratelimit.Trusted
+	TLS            TLS
+	Timeouts       Timeouts
+	Limits         Limits
+	RateLimit      RateLimit
+	Upstream       Upstream
+	Health         health.Options
+	Admin          Admin
+	Log            Log
 }
 
 // Listener modes.
@@ -74,6 +80,9 @@ type Route struct {
 	// both set or both empty. A relative path is resolved against the
 	// directory of the config file.
 	Cert, Key string
+	// RateLimit, if set, replaces [rate_limit]'s default for this route.
+	// A zero Rate turns limiting off here.
+	RateLimit *ratelimit.Limit
 }
 
 // Pool is a named set of backends and how to balance across them.
@@ -150,11 +159,33 @@ type Limits struct {
 	// MaxHeaderBytes caps a request's line plus headers; larger requests
 	// get 431.
 	MaxHeaderBytes int
+	// MaxConnsPerIP is the most client connections open at once from one
+	// address (an IPv6 /64), checked at accept before the TLS handshake.
+	// Trusted proxies are exempt. Zero means no cap. Like MaxConns it
+	// applies from startup and is not reloaded.
+	MaxConnsPerIP int
 }
 
 // DefaultLimits returns the limits used when the file sets none.
 func DefaultLimits() Limits {
 	return Limits{MaxConns: 10000, MaxHeaderBytes: 64 << 10}
+}
+
+// RateLimit configures per-client token buckets.
+type RateLimit struct {
+	// Default is the limit for routes that set none, and for requests
+	// served by default_pool. The zero Limit is off.
+	Default ratelimit.Limit
+	// MaxEntries caps the number of buckets held, across all routes.
+	MaxEntries int
+	// Sweep is how often buckets that have refilled to full are dropped.
+	Sweep time.Duration
+}
+
+// DefaultRateLimit returns the settings used when the file sets none:
+// limiting off.
+func DefaultRateLimit() RateLimit {
+	return RateLimit{MaxEntries: ratelimit.DefaultMaxEntries, Sweep: 10 * time.Second}
 }
 
 // Upstream controls the keep-alive pool of connections to backends.

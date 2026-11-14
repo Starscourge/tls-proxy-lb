@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,12 +14,14 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 const fullConfig = `
 default_pool = "pool_b"
+trusted_proxies = ["10.0.0.1/24", "2001:db8::1"]
 
 [[listener]]
 address = "0.0.0.0:8080"
@@ -37,10 +40,12 @@ host = "A.Test."
 pool = "pool_a"
 cert = "certs/a.test.crt"
 key  = "certs/a.test.key"
+rate_limit = { rate = 20, burst = 10 }
 
 [[route]]
 host = "[::1]"
 pool = "pool_b"
+rate_limit = { rate = 0 }
 
 [pool.pool_a]
 algorithm = "least_conn"
@@ -72,6 +77,13 @@ client_io_ms         = 15000
 [limits]
 max_conns        = 500
 max_header_bytes = 8192
+max_conns_per_ip = 50
+
+[rate_limit]
+rate        = 0.5
+burst       = 3
+max_entries = 2560
+sweep_ms    = 500
 
 [upstream]
 max_idle_per_backend = 16
@@ -110,10 +122,11 @@ func TestParseFull(t *testing.T) {
 			{Address: "127.0.0.1:8081", Mode: ModeRedirect, RedirectPort: 8443},
 		},
 		Routes: []Route{
-			{Host: "a.test", Pool: "pool_a", Cert: "certs/a.test.crt", Key: "certs/a.test.key"},
-			{Host: "::1", Pool: "pool_b"},
+			{Host: "a.test", Pool: "pool_a", Cert: "certs/a.test.crt", Key: "certs/a.test.key", RateLimit: &ratelimit.Limit{Rate: 20, Burst: 10}},
+			{Host: "::1", Pool: "pool_b", RateLimit: &ratelimit.Limit{}},
 		},
-		DefaultPool: "pool_b",
+		TrustedProxies: ratelimit.Trusted{netip.MustParsePrefix("10.0.0.0/24"), netip.MustParsePrefix("2001:db8::1/128")},
+		DefaultPool:    "pool_b",
 		Pools: []Pool{
 			{Name: "pool_a", Algorithm: lb.LeastConn, Backends: []string{"10.0.0.11:8000", "10.0.0.12:8000"}},
 			{Name: "pool_b", Algorithm: lb.ConsistentHash, HashHeader: "X-User-Id", Backends: []string{"backend_3:8000"}},
@@ -128,8 +141,9 @@ func TestParseFull(t *testing.T) {
 			UpstreamConnect:  300 * time.Millisecond,
 			UpstreamResponse: 4 * time.Second,
 		},
-		Limits:   Limits{MaxConns: 500, MaxHeaderBytes: 8192},
-		Upstream: Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second, MaxRetries: 2},
+		Limits:    Limits{MaxConns: 500, MaxHeaderBytes: 8192, MaxConnsPerIP: 50},
+		RateLimit: RateLimit{Default: ratelimit.Limit{Rate: 0.5, Burst: 3}, MaxEntries: 2560, Sweep: 500 * time.Millisecond},
+		Upstream:  Upstream{MaxIdlePerBackend: 16, IdleTimeout: 9 * time.Second, MaxRetries: 2},
 		Health: health.Options{
 			Path: "/ready?deep=1", Interval: 500 * time.Millisecond, Timeout: 250 * time.Millisecond,
 			Rise: 4, Fall: 5, PassiveFailures: 0, Eject: 3 * time.Second,
@@ -160,6 +174,9 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.RateLimit != DefaultRateLimit() || c.TrustedProxies != nil {
+		t.Fatalf("rate limit %+v trusted %v, want defaults", c.RateLimit, c.TrustedProxies)
+	}
 	if c.Timeouts != DefaultTimeouts() || c.Limits != DefaultLimits() || c.Upstream != DefaultUpstream() || c.Admin != (Admin{}) || c.Log != DefaultLog() || c.Health != health.DefaultOptions() {
 		t.Fatalf("timeouts %+v limits %+v upstream %+v admin %+v log %+v health %+v, want defaults", c.Timeouts, c.Limits, c.Upstream, c.Admin, c.Log, c.Health)
 	}
@@ -171,6 +188,10 @@ func TestParseDefaults(t *testing.T) {
 		"[health]\ninterval_ms = 0\ntimeout_ms = 5000\n",
 		"[admin]\naddress = \"[::1]:0\"\n",
 		"[admin]\naddress = \"localhost:6060\"\n",
+		// rate = 0 is off and needs no burst; an integer rate is fine.
+		"[rate_limit]\nrate = 0\n",
+		"[rate_limit]\nrate = 100\nburst = 1\n",
+		"[limits]\nmax_conns_per_ip = 0\n",
 	} {
 		if _, err := Parse("ok.toml", []byte(minimal+extra)); err != nil {
 			t.Fatalf("%s: %v", extra, err)
@@ -307,6 +328,21 @@ func TestParseRejects(t *testing.T) {
 		{"route key without cert", base + "[[route]]\nhost = \"a.test\"\npool = \"p\"\nkey = \"a.key\"\n" + pool, "route[0].cert: is required when key is set"},
 		{"default key without cert", base + route + pool + "[tls]\ndefault_key = \"d.key\"\n", "tls.default_cert: is required when default_key is set"},
 		{"https route without cert", "[[listener]]\naddress = \":443\"\n" + route + pool, "route[0].cert: is required: an https listener serves this host and [tls] has no default_cert"},
+		{"trusted proxy not an address", "trusted_proxies = [\"10.0.0.0/8\", \"proxy.local\"]\n" + base + route + pool, `trusted_proxies[1]: "proxy.local" is not an IP address or CIDR prefix`},
+		{"trusted proxy bad prefix", "trusted_proxies = [\"10.0.0.0/40\"]\n" + base + route + pool, `trusted_proxies[0]: "10.0.0.0/40" is not`},
+		{"max_conns_per_ip negative", base + route + pool + "[limits]\nmax_conns_per_ip = -1\n", "limits.max_conns_per_ip: must be from 0 (no cap) to 10000000, got -1"},
+		{"rate without burst", base + route + pool + "[rate_limit]\nrate = 10\n", "rate_limit.burst: is required when rate is set"},
+		{"rate negative", base + route + pool + "[rate_limit]\nrate = -1\nburst = 1\n", "rate_limit.rate: must be 0 (off) or from 0.001 to 1e+09 requests per second, got -1"},
+		{"rate tiny", base + route + pool + "[rate_limit]\nrate = 0.0001\nburst = 1\n", "rate_limit.rate: must be 0 (off) or from 0.001"},
+		{"rate nan", base + route + pool + "[rate_limit]\nrate = nan\nburst = 1\n", "rate_limit.rate: must be 0 (off)"},
+		{"burst zero", base + route + pool + "[rate_limit]\nrate = 1\nburst = 0\n", "rate_limit.burst: must be from 1 to 1000000, got 0"},
+		{"burst huge", base + route + pool + "[rate_limit]\nrate = 1\nburst = 1000001\n", "rate_limit.burst: must be from 1 to 1000000"},
+		{"max_entries small", base + route + pool + "[rate_limit]\nmax_entries = 255\n", "rate_limit.max_entries: must be from 256 to 100000000, got 255"},
+		{"sweep zero", base + route + pool + "[rate_limit]\nsweep_ms = 0\n", "rate_limit.sweep_ms: must be from 1 to 86400000 milliseconds, got 0"},
+		{"unknown rate_limit key", base + route + pool + "[rate_limit]\nrps = 5\n", "rate_limit.rps: unknown field"},
+		{"route rate without burst", base + "[[route]]\nhost = \"a.test\"\npool = \"p\"\nrate_limit = { rate = 5 }\n" + pool, "route[0].rate_limit.burst: is required when rate is set"},
+		{"route rate negative", base + route + "[[route]]\nhost = \"b.test\"\npool = \"p\"\nrate_limit = { rate = -5, burst = 1 }\n" + pool, "route[1].rate_limit.rate: must be 0 (off)"},
+		{"route rate_limit unknown key", base + "[[route]]\nhost = \"a.test\"\npool = \"p\"\nrate_limit = { rate = 5, brust = 1 }\n" + pool, "route.rate_limit.brust: unknown field"},
 		{"https without any cert", "default_pool = \"p\"\n[[listener]]\naddress = \":80\"\nmode = \"http\"\n[[listener]]\naddress = \":443\"\nmode = \"https\"\n" + pool, `listener[1].mode: "https" needs a certificate`},
 	}
 	for _, tc := range cases {

@@ -249,3 +249,83 @@ func checkSVG(t *testing.T, s string) {
 		t.Fatalf("root element %q, want svg", root)
 	}
 }
+
+func TestBySecondDropsThePartialLastSecond(t *testing.T) {
+	var reqs []Request
+	for ms := int64(0); ms <= 2050; ms += 10 { // two full seconds and 50 ms
+		reqs = append(reqs, Request{StartMS: ms, Backend: "b", Status: 200})
+	}
+	secs := BySecond(reqs, 0)
+	if len(secs) != 2 || secs[0].OK != 100 || secs[1].OK != 100 {
+		t.Fatalf("got %d seconds, first %+v", len(secs), secs[0].OK)
+	}
+}
+
+// slowRun: 100 req/s over three backends for 30 s; b2 is slow (250 ms)
+// from 10 s to 20 s. With eject set, b2 is ejected at 10.1 s and gets no
+// requests after that until 21 s.
+func slowRun(eject bool) ([]Request, map[string]int64, []HealthEvent) {
+	var reqs []Request
+	names := []string{"b1", "b2", "b3"}
+	for i := range 3000 {
+		ms := int64(i * 10)
+		r := Request{StartMS: ms, Backend: names[i%3], Status: 200, LatencyMS: 1}
+		if r.Backend == "b2" && ms >= 10000 && ms < 21000 {
+			switch {
+			case eject && ms >= 10100:
+				r.Backend = "b1"
+			case ms < 20000:
+				r.LatencyMS = 250
+			}
+		}
+		reqs = append(reqs, r)
+	}
+	ev := map[string]int64{"fault": 10000, "clear": 20000}
+	var health []HealthEvent
+	if eject {
+		health = []HealthEvent{{10100, "backend ejected", "addr2"}, {21000, "backend healthy", "addr2"}}
+	}
+	return reqs, ev, health
+}
+
+func TestAnalyseSlow(t *testing.T) {
+	reqs, ev, health := slowRun(false)
+	rr, err := AnalyseSlow("rr", reqs, ev, health, "addr2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr.Eject != 0 || share(rr.During, "b2") < 33 || rr.During.P99 != 250 {
+		t.Fatalf("rr: eject %d, share %.1f, p99 %v", rr.Eject, share(rr.During, "b2"), rr.During.P99)
+	}
+	if rr.Before.Requests != 800 {
+		t.Fatalf("before: %d requests, want 800 (warm-up left out)", rr.Before.Requests)
+	}
+
+	reqs, ev, health = slowRun(true)
+	ej, err := AnalyseSlow("lc-eject", reqs, ev, health, "addr2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ej.Eject != 10100 || ej.Readmit != 21000 {
+		t.Fatalf("eject %d, readmit %d", ej.Eject, ej.Readmit)
+	}
+	if share(ej.DuringEjected, "b2") != 0 || ej.DuringEjected.P99 != 1 {
+		t.Fatalf("ejected window: share %.1f, p99 %v", share(ej.DuringEjected, "b2"), ej.DuringEjected.P99)
+	}
+
+	var out strings.Builder
+	WriteSlow(&out, []SlowRun{rr, ej}, "b2")
+	for _, want := range []string{"rr         b2 stayed in rotation", "out 100 ms after the fault (backend ejected), back 1000 ms after it cleared"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, out.String())
+		}
+	}
+	checkSVG(t, SlowFigure([]SlowRun{rr, ej}, "netem delay", "b2").SVG())
+
+	// An ejection after the fault cleared is not one the fault caused.
+	health[0].MS = 20500
+	late, _ := AnalyseSlow("x", reqs, ev, health, "addr2")
+	if late.Eject != 0 {
+		t.Fatalf("eject at %d counted, after the fault cleared", late.Eject)
+	}
+}

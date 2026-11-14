@@ -4,6 +4,7 @@
 //
 //	plot clock -save F | -check F
 //	plot kill  -requests R -events E -health H -backend ADDR -name NAME -svg OUT
+//	plot slow  -fault F -backend ADDR -name NAME -svg OUT name=dir ...
 //
 // Each subcommand prints its summary to stdout, writes its graph, and
 // exits 1 when the run broke a claim the experiment makes (a failed
@@ -17,7 +18,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: plot clock|kill [flags]")
+		fmt.Fprintln(os.Stderr, "usage: plot clock|kill|slow [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -26,6 +27,8 @@ func main() {
 		err = cmdClock(os.Args[2:])
 	case "kill":
 		err = cmdKill(os.Args[2:])
+	case "slow":
+		err = cmdSlow(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "plot: unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)

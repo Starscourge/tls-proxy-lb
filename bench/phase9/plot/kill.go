@@ -47,7 +47,7 @@ func AnalyseKill(reqs []Request, ev map[string]int64, health []HealthEvent, vict
 	k.T0 = reqs[0].StartMS
 	end := reqs[len(reqs)-1].StartMS + 1
 	thr := []float64{100, 1000}
-	k.Before = Summarise(reqs, k.T0, k.Kill, thr...)
+	k.Before = Summarise(reqs, k.T0+warmupMS, k.Kill, thr...)
 	k.Detection = Summarise(reqs, k.Kill, k.Eject, thr...)
 	k.Out = Summarise(reqs, k.Eject, k.Readmit, thr...)
 	k.After = Summarise(reqs, k.Readmit, end, thr...)
@@ -83,6 +83,7 @@ func WriteKill(w io.Writer, k KillResult, name string) {
 	fmt.Fprintf(w, "failed during detection           %d\n", k.Detection.Failed)
 	fmt.Fprintf(w, "failed after ejection             %d\n", k.FailedAfterEjection)
 	fmt.Fprintf(w, "served by %s while out of rotation %d\n", name, k.VictimRequestsWhenOut)
+	fmt.Fprintf(w, "\n(the first %d s, k6 starting up, are left out of \"before the kill\")\n", warmupMS/1000)
 }
 
 func nan0(v float64) float64 {

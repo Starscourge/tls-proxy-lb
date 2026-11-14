@@ -184,18 +184,30 @@ func (c LineChart) render(b *strings.Builder, x0, y0, w int) {
 	px0, px1 := float64(x0+padL), float64(x0+w-padR)
 	py0, py1 := float64(y0+46), float64(y0+h-36)
 	fmt.Fprintf(b, `<text class="ink" x="%d" y="%d" font-weight="600">%s</text>`+"\n", x0+16, y0+14, esc(c.Title))
+	// Legend: the series when there are two or more, then the bands.
+	lx := float64(x0 + 16)
 	if len(c.Series) >= 2 {
-		lx := float64(x0 + 16)
 		for _, s := range c.Series {
-			cls := s.Class
 			dash := ""
 			if s.Dash {
 				dash = " dash"
 			}
-			fmt.Fprintf(b, `<line class="line %s%s" x1="%.1f" y1="%d" x2="%.1f" y2="%d"/>`, cls, dash, lx, y0+27, lx+16, y0+27)
+			if c.Stacked {
+				fmt.Fprintf(b, `<rect class="%s" x="%.1f" y="%d" width="12" height="12" rx="2"/>`, s.Class, lx+2, y0+21)
+			} else {
+				fmt.Fprintf(b, `<line class="line %s%s" x1="%.1f" y1="%d" x2="%.1f" y2="%d"/>`, s.Class, dash, lx, y0+27, lx+16, y0+27)
+			}
 			fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%d">%s</text>`+"\n", lx+21, y0+31, esc(s.Name))
 			lx += 21 + 7.2*float64(len([]rune(s.Name))) + 18
 		}
+	}
+	for _, bd := range c.Bands {
+		if bd.Label == "" {
+			continue
+		}
+		fmt.Fprintf(b, `<rect class="band" x="%.1f" y="%d" width="16" height="12" rx="2"/><rect class="mark" fill="none" x="%.1f" y="%d" width="16" height="12" rx="2"/>`, lx, y0+21, lx, y0+21)
+		fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%d">%s</text>`+"\n", lx+21, y0+31, esc(bd.Label))
+		lx += 21 + 7.2*float64(len([]rune(bd.Label))) + 18
 	}
 
 	ymin, ymax := c.YMin, c.YMax
@@ -206,6 +218,9 @@ func (c LineChart) render(b *strings.Builder, x0, y0, w int) {
 					ymax = p.Y
 				}
 			}
+		}
+		if !c.LogY {
+			ymax += (ymax - ymin) * 0.1 // headroom for the marks' labels
 		}
 		if ymax <= ymin {
 			ymax = ymin + 1
@@ -236,9 +251,6 @@ func (c LineChart) render(b *strings.Builder, x0, y0, w int) {
 	for _, bd := range c.Bands {
 		a, z := sx(math.Max(bd.X0, c.XMin)), sx(math.Min(bd.X1, c.XMax))
 		fmt.Fprintf(b, `<rect class="band" x="%.1f" y="%.1f" width="%.1f" height="%.1f"><title>%s</title></rect>`+"\n", a, py0, z-a, py1-py0, esc(bd.Label))
-		if bd.Label != "" {
-			fmt.Fprintf(b, `<text class="muted" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`+"\n", (a+z)/2, py0+26, esc(bd.Label))
-		}
 	}
 	for _, t := range yticks {
 		y := sy(t)

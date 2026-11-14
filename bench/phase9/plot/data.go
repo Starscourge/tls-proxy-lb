@@ -188,13 +188,15 @@ type Second struct {
 	Latency    []float64      // every request's latency, ms
 }
 
-// BySecond bins requests by start time into seconds from t0; the result
-// covers [t0, last start].
+// BySecond bins requests by start time into whole seconds from t0. The
+// last second, which the run ends part-way through, is left out, so a
+// per-second rate never dips at the end; the windows in Summarise count
+// every request.
 func BySecond(reqs []Request, t0 int64) []Second {
 	if len(reqs) == 0 {
 		return nil
 	}
-	n := int((reqs[len(reqs)-1].StartMS-t0)/1000) + 1
+	n := max(1, int((reqs[len(reqs)-1].StartMS-t0)/1000))
 	out := make([]Second, n)
 	for i := range out {
 		out[i].ByBackend = map[string]int{}

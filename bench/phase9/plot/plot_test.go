@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -327,5 +329,155 @@ func TestAnalyseSlow(t *testing.T) {
 	late, _ := AnalyseSlow("x", reqs, ev, health, "addr2")
 	if late.Eject != 0 {
 		t.Fatalf("eject at %d counted, after the fault cleared", late.Eject)
+	}
+}
+
+const wrkOut = `Running 15s test @ https://default.test:8443/1k
+  8 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     4.21ms    2.48ms  88.18ms   91.02%
+    Req/Sec     6.04k   512.33     7.11k    70.33%
+  Latency Distribution
+     50%  211.00us
+     75%    1.45ms
+     90%    3.86ms
+     99%    1.02s
+  720661 requests in 15.00s, 834.12MB read
+  Socket errors: connect 0, read 3, write 0, timeout 2
+  Non-2xx or 3xx responses: 7
+Requests/sec:  48044.72
+Transfer/sec:     55.61MB
+`
+
+const wrk2Out = `Running 40s test @ https://default.test:8443/1k
+  8 threads and 200 connections
+  Thread calibration: mean lat.: 1.497ms, rate sampling interval: 10ms
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.48ms  506.36us   6.52ms   71.08%
+  Latency Distribution (HdrHistogram - Recorded Latency)
+ 50.000%    1.43ms
+ 75.000%    1.79ms
+ 90.000%    2.10ms
+ 99.000%    2.96ms
+ 99.900%    3.83ms
+ 99.990%    6.52ms
+100.000%    6.52ms
+
+  Detailed Percentile spectrum:
+       Value   Percentile   TotalCount 1/(1-Percentile)
+
+       0.512     0.000000            1         1.00
+       6.519     1.000000         3900          inf
+#[Mean    =        1.477, StdDeviation   =        0.506]
+----------------------------------------------------------
+  1344004 requests in 40.00s, 3.32MB read
+Requests/sec:  33600.10
+`
+
+func TestParseWrk(t *testing.T) {
+	w, err := ParseWrk(strings.NewReader(wrkOut))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.RPS != 48044.72 || w.Requests != 720661 || w.Errors != 12 {
+		t.Fatalf("rps %v requests %d errors %d", w.RPS, w.Requests, w.Errors)
+	}
+	if w.P50 != 0.211 || w.P90 != 3.86 || w.P99 != 1020 || !math.IsNaN(w.P999) {
+		t.Fatalf("percentiles %v %v %v %v", w.P50, w.P90, w.P99, w.P999)
+	}
+	w2, err := ParseWrk(strings.NewReader(wrk2Out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w2.RPS != 33600.10 || w2.Requests != 1344004 || w2.P99 != 2.96 || w2.P999 != 3.83 || w2.Errors != 0 {
+		t.Fatalf("wrk2: %+v", w2)
+	}
+	if _, err := ParseWrk(strings.NewReader("unable to connect to default.test:8443 Connection refused\n")); err == nil {
+		t.Fatal("want an error for a run without Requests/sec")
+	}
+}
+
+func TestReadBench(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, s string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta := "wall_ms=15000\ncpu_usec=60000000\nmem_peak_bytes=52428800\n"
+	for _, d := range []string{"proxy", "nginx"} {
+		for i, rps := range []string{"40000", "50000", "45000"} {
+			out := strings.Replace(wrkOut, "48044.72", rps, 1)
+			if d == "nginx" {
+				out = strings.Replace(wrkOut, "48044.72", "50000", 1)
+			}
+			m := meta
+			if d == "proxy" {
+				m += "gc_cpu_s=3\ngo_busy_cpu_s=60\n"
+			}
+			write(fmt.Sprintf("raw/%s/ka-1k-c200/tput-%d.txt", d, i+1), out)
+			write(fmt.Sprintf("raw/%s/ka-1k-c200/tput-%d.meta", d, i+1), m)
+			write(fmt.Sprintf("raw/%s/ka-1k-c200/lat-%d.txt", d, i+1), wrk2Out)
+			write(fmt.Sprintf("raw/%s/ka-1k-c200/lat-%d.meta", d, i+1), meta+"rate=31500\n")
+		}
+	}
+	cells, err := ReadBench(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != 2 || cells[0].DUT != "proxy" || cells[0].Conns != 200 || len(cells[0].Tput) != 3 || len(cells[0].Lat) != 3 {
+		t.Fatalf("cells: %+v", cells)
+	}
+	if r := Ratio(cells, "ka-1k", 200); r != 90 {
+		t.Fatalf("ratio %v, want 90 (median 45000 of 50000)", r)
+	}
+	p := cells[0].Tput[0]
+	if p.Cores() != 4 || p.GCShare() != 5 || !math.IsNaN(cells[1].Tput[0].GCShare()) {
+		t.Fatalf("cores %v gc %v", p.Cores(), p.GCShare())
+	}
+	var out strings.Builder
+	WriteBench(&out, cells)
+	for _, want := range []string{"45000 (40000-50000)", "90.0", "2.96 (2.96-2.96)", "31500"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("tables lack %q:\n%s", want, out.String())
+		}
+	}
+	tput, lat := BenchFigures(cells, "test machine")
+	checkSVG(t, tput.SVG())
+	checkSVG(t, lat.SVG())
+	if !strings.Contains(tput.SVG(), "200 connections: 90% of nginx") {
+		t.Error("throughput graph lacks the ratio")
+	}
+}
+
+func TestVariants(t *testing.T) {
+	mk := func(name string, rps float64, p99 float64, gc float64) Cell {
+		var c Cell
+		c.DUT, c.Scenario, c.Conns = "proxy", name, 200
+		for range 3 {
+			c.Tput = append(c.Tput, Run{WrkResult{RPS: rps, Requests: 1000}, Meta{"wall_ms": 1000, "cpu_usec": 4e6, "mem_peak_bytes": 32 << 20, "gc_cpu_s": gc, "go_busy_cpu_s": 100}})
+			c.Lat = append(c.Lat, Run{WrkResult{RPS: rps * 0.7, Requests: 700, P50: 1, P99: p99, P999: 2 * p99}, Meta{"wall_ms": 1000, "cpu_usec": 7e4, "rate": 35000}})
+		}
+		return c
+	}
+	cells := []Cell{mk("gogc-200", 55000, 4, 1.5), mk("gogc-100", 50000, 5, 3)}
+	orderVariants(cells, []string{"gogc-100", "gogc-200"})
+	if cells[0].Scenario != "gogc-100" {
+		t.Fatalf("order: %s first", cells[0].Scenario)
+	}
+	var out strings.Builder
+	WriteVariants(&out, cells)
+	for _, want := range []string{"GOGC=100 (default)", "+10.0%", "-20.0%", "35000 req/s"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("table lacks %q:\n%s", want, out.String())
+		}
+	}
+	checkSVG(t, VariantsFigure(cells, "t", "m").SVG())
+	if variantLabel("gogc-off-limit-256mib") != "GOGC=off, GOMEMLIMIT=256MiB" || variantLabel("before") != "before" {
+		t.Error("variantLabel")
 	}
 }

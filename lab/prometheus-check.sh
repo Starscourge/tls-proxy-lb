@@ -35,8 +35,12 @@ echo "== Prometheus scrapes the proxy"
 expect 'up{job="proxy"}' 'up%7Bjob%3D%22proxy%22%7D' 1
 expect 'count(proxy_backend_healthy == 1)' 'count(proxy_backend_healthy%3D%3D1)' 3
 
-# Requests through the proxy, then the counter must grow past them.
-before="$(value 'sum(proxy_requests_total)')"
+# Requests through the proxy, then the counter must grow past them. Only
+# series scraped in the last 10 s count: when the proxy and Prometheus have
+# just been recreated, the old process's series are still within the
+# 5-minute lookback with no staleness marker, and would mask the reset.
+query='sum(last_over_time(proxy_requests_total%5B10s%5D))'
+before="$(value "$query")"
 before="${before:-0}"
 for _ in $(seq 10); do
   "${compose[@]}" exec -T loadgen \
@@ -44,7 +48,7 @@ for _ in $(seq 10); do
       --resolve a.test:8443:10.0.0.10 https://a.test:8443/
 done
 for _ in $(seq 60); do
-  after="$(value 'sum(proxy_requests_total)')"
+  after="$(value "$query")"
   if [[ -n "$after" ]] && awk -v a="$after" -v b="$before" 'BEGIN { exit !(a >= b + 10) }'; then
     echo "ok: sum(proxy_requests_total) $before -> $after after 10 requests"
     exit 0

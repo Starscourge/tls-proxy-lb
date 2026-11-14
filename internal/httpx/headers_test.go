@@ -44,23 +44,30 @@ func TestRemoveHopByHopEmptyTokens(t *testing.T) {
 
 func TestSetForwarded(t *testing.T) {
 	cases := []struct {
-		name  string
-		prior []string
-		want  string
+		name    string
+		trusted bool
+		prior   []string
+		want    string
 	}{
-		{"none", nil, "192.0.2.1"},
-		{"one", []string{"203.0.113.5"}, "203.0.113.5, 192.0.2.1"},
-		{"several headers", []string{"203.0.113.5", "198.51.100.2, 10.0.0.1"}, "203.0.113.5, 198.51.100.2, 10.0.0.1, 192.0.2.1"},
+		{"none", false, nil, "192.0.2.1"},
+		{"untrusted, one", false, []string{"203.0.113.5"}, "192.0.2.1"},
+		{"untrusted, several", false, []string{"203.0.113.5", "198.51.100.2, 10.0.0.1"}, "192.0.2.1"},
+		{"trusted, none", true, nil, "192.0.2.1"},
+		{"trusted, one", true, []string{"203.0.113.5"}, "203.0.113.5, 192.0.2.1"},
+		{"trusted, several", true, []string{"203.0.113.5", "198.51.100.2, 10.0.0.1"}, "203.0.113.5, 198.51.100.2, 10.0.0.1, 192.0.2.1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := http.Header{"X-Forwarded-Proto": {"https"}}
+			h := http.Header{"X-Forwarded-Proto": {"https"}, "Forwarded": {"for=203.0.113.5"}}
 			if tc.prior != nil {
 				h["X-Forwarded-For"] = tc.prior
 			}
-			SetForwarded(h, "192.0.2.1", "http")
+			SetForwarded(h, Forwarding{ClientIP: "192.0.2.1", Proto: "http", Trusted: tc.trusted})
 			if got := h["X-Forwarded-For"]; len(got) != 1 || got[0] != tc.want {
 				t.Fatalf("X-Forwarded-For = %q, want %q", got, tc.want)
+			}
+			if _, ok := h["Forwarded"]; ok != tc.trusted {
+				t.Fatalf("Forwarded kept %v, want %v", ok, tc.trusted)
 			}
 			if got := h["X-Forwarded-Proto"]; len(got) != 1 || got[0] != "http" {
 				t.Fatalf("X-Forwarded-Proto = %q, want [http]", got)

@@ -1,8 +1,10 @@
 package conn
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
 )
 
@@ -179,4 +182,67 @@ func TestProxyMaxRequestsPerConn(t *testing.T) {
 		}
 	}
 	cl.expectClosed(2 * time.Second)
+}
+
+// X-Forwarded-For from an untrusted client is replaced, even when the
+// client names it in Connection to have it stripped; from a trusted proxy
+// it is appended to, and Forwarded is kept.
+func TestProxyForwardedFor(t *testing.T) {
+	got := make(chan *http.Request, 1)
+	baddr := rawBackend(t, func(c net.Conn) {
+		br := bufio.NewReader(c)
+		for {
+			req, _, err := readRequestFrom(c, br)
+			if err != nil {
+				return
+			}
+			got <- req
+			io.WriteString(c, "HTTP/1.1 204 No Content\r\n\r\n")
+		}
+	})
+	for _, tc := range []struct {
+		name, trusted string
+		wantForwarded bool
+	}{
+		{"untrusted", "", false},
+		{"trusted", "127.0.0.1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _, _ := startProxy(t, baddr, func(c *config.Config) {
+				if tc.trusted != "" {
+					tr, err := ratelimit.ParseTrusted([]string{tc.trusted})
+					if err != nil {
+						t.Fatal(err)
+					}
+					c.TrustedProxies = tr
+				}
+			})
+			cl := dialClient(t, addr)
+			cl.send("GET / HTTP/1.1\r\nHost: a\r\nConnection: X-Forwarded-For\r\n" +
+				"X-Forwarded-For: 203.0.113.9\r\nForwarded: for=203.0.113.9\r\n\r\n")
+			if resp, _ := cl.read("GET"); resp.StatusCode != 204 {
+				t.Fatalf("status %d", resp.StatusCode)
+			}
+			req := <-got
+			// Connection named X-Forwarded-For, so the client's copy is
+			// stripped as hop-by-hop before the proxy sets its own: the
+			// trick cannot remove the proxy's entry.
+			if v := req.Header["X-Forwarded-For"]; len(v) != 1 || v[0] != "127.0.0.1" {
+				t.Errorf("X-Forwarded-For %q, want [127.0.0.1]", v)
+			}
+			if _, ok := req.Header["Forwarded"]; ok != tc.wantForwarded {
+				t.Errorf("Forwarded kept %v, want %v", ok, tc.wantForwarded)
+			}
+		})
+	}
+	// Without the Connection trick, a trusted proxy's X-Forwarded-For is
+	// appended to.
+	tr, _ := ratelimit.ParseTrusted([]string{"127.0.0.1"})
+	addr, _, _ := startProxy(t, baddr, func(c *config.Config) { c.TrustedProxies = tr })
+	cl := dialClient(t, addr)
+	cl.send("GET / HTTP/1.1\r\nHost: a\r\nX-Forwarded-For: 203.0.113.9\r\n\r\n")
+	cl.read("GET")
+	if v := (<-got).Header.Get("X-Forwarded-For"); v != "203.0.113.9, 127.0.0.1" {
+		t.Errorf("trusted proxy: X-Forwarded-For %q", v)
+	}
 }

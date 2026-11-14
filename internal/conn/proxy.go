@@ -376,7 +376,8 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		// Every backend is unhealthy: answer at once, without a dial.
 		return cc.reject(rec, req, http.StatusServiceUnavailable, "no healthy backend")
 	}
-	httpx.PrepareRequest(req, cc.ip, cc.scheme, b.Conns.Reuse())
+	httpx.PrepareRequest(req, httpx.Forwarding{ClientIP: cc.ip, Proto: cc.scheme,
+		Trusted: snap.TrustedProxies.Contains(cc.tc.Peer())}, b.Conns.Reuse())
 
 	var reqBody *httpx.Body
 	if req.Body != nil && req.Body != http.NoBody {

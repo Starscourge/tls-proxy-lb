@@ -39,17 +39,31 @@ func RemoveHopByHop(h http.Header) {
 	}
 }
 
-// SetForwarded appends clientIP to X-Forwarded-For, joining any values the
-// client sent into one header, and sets X-Forwarded-Proto to proto.
-//
-// Appending trusts nothing: the client-supplied part is passed on as is and
-// the address the proxy saw is always last. Phase 6 and 8 tighten this for
-// untrusted clients.
-func SetForwarded(h http.Header, clientIP, proto string) {
-	if prior := h["X-Forwarded-For"]; len(prior) > 0 {
-		h["X-Forwarded-For"] = []string{strings.Join(prior, ", ") + ", " + clientIP}
+// Forwarding is what the proxy tells a backend about the client.
+type Forwarding struct {
+	// ClientIP is the address the request came from.
+	ClientIP string
+	// Proto is "http" or "https", the scheme the client used.
+	Proto string
+	// Trusted is set when the peer is a trusted proxy (trusted_proxies),
+	// whose own X-Forwarded-For is passed on.
+	Trusted bool
+}
+
+// SetForwarded sets X-Forwarded-For and X-Forwarded-Proto. From a trusted
+// proxy, ClientIP is appended to the X-Forwarded-For it sent, its header
+// lines joined into one. From anyone else, X-Forwarded-For is replaced by
+// ClientIP alone, and Forwarded is removed: a client can write any address
+// it likes into either, and a backend reading the leftmost entry would
+// believe it. X-Forwarded-Proto is always overwritten.
+func SetForwarded(h http.Header, f Forwarding) {
+	if prior := h["X-Forwarded-For"]; f.Trusted && len(prior) > 0 {
+		h["X-Forwarded-For"] = []string{strings.Join(prior, ", ") + ", " + f.ClientIP}
 	} else {
-		h["X-Forwarded-For"] = []string{clientIP}
+		h["X-Forwarded-For"] = []string{f.ClientIP}
 	}
-	h["X-Forwarded-Proto"] = []string{proto}
+	if !f.Trusted {
+		delete(h, "Forwarded")
+	}
+	h["X-Forwarded-Proto"] = []string{f.Proto}
 }

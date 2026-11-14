@@ -24,16 +24,16 @@ func CheckRequest(req *http.Request) Reason {
 
 // PrepareRequest rewrites a request read from a client for the upstream:
 // hop-by-hop headers are removed and X-Forwarded-For and X-Forwarded-Proto
-// set. With keepAlive false the request asks the backend to close the
+// set (SetForwarded). With keepAlive false the request asks the backend to close the
 // connection after the response; with it true the request carries no
 // Connection header, which in HTTP/1.1 means keep-alive, whatever the
 // client asked of its own connection.
 //
 // Host, the request target, the framing (ContentLength, TransferEncoding)
 // and trailers are left as parsed; Request.Write re-serialises them.
-func PrepareRequest(req *http.Request, clientIP, proto string, keepAlive bool) {
+func PrepareRequest(req *http.Request, f Forwarding, keepAlive bool) {
 	RemoveHopByHop(req.Header)
-	SetForwarded(req.Header, clientIP, proto)
+	SetForwarded(req.Header, f)
 	// Request.Write adds "User-Agent: Go-http-client/1.1" when the header
 	// is absent. An empty value suppresses that without sending a header.
 	if _, ok := req.Header["User-Agent"]; !ok {

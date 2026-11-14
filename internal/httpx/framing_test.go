@@ -51,7 +51,7 @@ func TestPrepareRequestWire(t *testing.T) {
 		"X-Forwarded-For: 203.0.113.9\r\n"+
 		"X-Forwarded-Proto: https\r\n"+
 		"Content-Length: 5\r\n\r\nhello")
-	PrepareRequest(req, "192.0.2.1", "http", false)
+	PrepareRequest(req, Forwarding{ClientIP: "192.0.2.1", Proto: "http"}, false)
 	var buf bytes.Buffer
 	if err := req.Write(&buf); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,8 @@ func TestPrepareRequestWire(t *testing.T) {
 			t.Errorf("%s forwarded: %q", h, out.Header[h])
 		}
 	}
-	if got := out.Header.Get("X-Forwarded-For"); got != "203.0.113.9, 192.0.2.1" {
+	// From an untrusted client the X-Forwarded-For it sent is replaced.
+	if got := out.Header.Get("X-Forwarded-For"); got != "192.0.2.1" {
 		t.Errorf("X-Forwarded-For = %q", got)
 	}
 	if got := out.Header.Get("X-Forwarded-Proto"); got != "http" {
@@ -89,7 +90,7 @@ func TestPrepareRequestKeepAlive(t *testing.T) {
 		"GET / HTTP/1.0\r\n\r\n",
 	} {
 		req := readReq(t, raw)
-		PrepareRequest(req, "192.0.2.1", "http", true)
+		PrepareRequest(req, Forwarding{ClientIP: "192.0.2.1", Proto: "http"}, true)
 		var buf bytes.Buffer
 		if err := req.Write(&buf); err != nil {
 			t.Fatal(err)
@@ -102,7 +103,7 @@ func TestPrepareRequestKeepAlive(t *testing.T) {
 
 func TestPrepareRequestKeepsUserAgent(t *testing.T) {
 	req := readReq(t, "GET / HTTP/1.1\r\nHost: a\r\nUser-Agent: curl/8\r\n\r\n")
-	PrepareRequest(req, "192.0.2.1", "http", false)
+	PrepareRequest(req, Forwarding{ClientIP: "192.0.2.1", Proto: "http"}, false)
 	var buf bytes.Buffer
 	req.Write(&buf)
 	if !strings.Contains(buf.String(), "User-Agent: curl/8\r\n") {
@@ -113,7 +114,7 @@ func TestPrepareRequestKeepsUserAgent(t *testing.T) {
 func TestPrepareRequestChunkedStaysChunked(t *testing.T) {
 	req := readReq(t, "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTrailer: X-Sum\r\n\r\n"+
 		"5\r\nhello\r\n0\r\nX-Sum: 42\r\n\r\n")
-	PrepareRequest(req, "192.0.2.1", "http", false)
+	PrepareRequest(req, Forwarding{ClientIP: "192.0.2.1", Proto: "http"}, false)
 	var buf bytes.Buffer
 	if err := req.Write(&buf); err != nil {
 		t.Fatal(err)

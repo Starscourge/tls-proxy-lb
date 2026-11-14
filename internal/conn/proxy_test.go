@@ -315,7 +315,9 @@ func TestProxyRequestHeaders(t *testing.T) {
 			t.Errorf("%s forwarded: %q", h, v)
 		}
 	}
-	if v := req.Header.Get("X-Forwarded-For"); v != "203.0.113.9, 127.0.0.1" {
+	// The client is not a trusted proxy: the X-Forwarded-For it sent is
+	// replaced, not appended to.
+	if v := req.Header.Get("X-Forwarded-For"); v != "127.0.0.1" {
 		t.Errorf("X-Forwarded-For = %q", v)
 	}
 	if v := req.Header.Get("X-Forwarded-Proto"); v != "http" {

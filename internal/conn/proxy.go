@@ -651,7 +651,7 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 		*w = bodyWriter{}
 		return nil, err
 	}
-	w.start(uc, req, reqBody, cc.p.afterRequestWrite, cc.writerPanicked)
+	w.start(cc, uc, req, reqBody, cc.p.afterRequestWrite)
 	return cc.readResponse(uc, req)
 }
 
@@ -782,25 +782,18 @@ func (cc *clientConn) misdirected(snap *config.Snapshot, host string) string {
 // readResponse reads the backend's final response, relaying any 1xx interim
 // responses (such as 100 Continue) to the client on the way.
 func (cc *clientConn) readResponse(uc *upstream.Conn, req *http.Request) (*http.Response, error) {
-	for {
-		resp, err := http.ReadResponse(uc.R, req)
-		if err != nil {
-			return nil, err
-		}
-		switch {
-		case resp.StatusCode == http.StatusSwitchingProtocols:
-			// Upgrade is stripped from requests, so a 101 is a broken backend.
-			return nil, errors.New("unexpected 101 Switching Protocols")
-		case resp.StatusCode >= 100 && resp.StatusCode < 200:
-			cc.interimSent = true
-			cc.dw.Timeout = cc.t.ClientIO
-			if err := httpx.WriteInterim(cc.bw, resp); err != nil {
-				return nil, clientError{err}
-			}
-		default:
-			return resp, nil
-		}
+	return httpx.ReadResponse(uc.R, req, cc.relayInterim)
+}
+
+// relayInterim sends a 1xx response on to the client. Once one has gone,
+// the request cannot be retried on another backend.
+func (cc *clientConn) relayInterim(resp *http.Response) error {
+	cc.interimSent = true
+	cc.dw.Timeout = cc.t.ClientIO
+	if err := httpx.WriteInterim(cc.bw, resp); err != nil {
+		return clientError{err}
 	}
+	return nil
 }
 
 // responseError answers a request whose response headers never arrived.
@@ -961,7 +954,7 @@ type bodyWriter struct {
 // start sends req on uc, inline or from a new goroutine; w must not be
 // running. after, if non-nil, runs in the goroutine once the request is
 // sent (Proxy.afterRequestWrite).
-func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, after func(), panicked func(any)) {
+func (w *bodyWriter) start(cc *clientConn, uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, after func()) {
 	*w = bodyWriter{uc: uc, reqBody: reqBody}
 	if reqBody == nil {
 		// No body: nothing can block on the client, so write inline.
@@ -978,7 +971,7 @@ func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.
 			if v := recover(); v != nil {
 				w.err = fmt.Errorf("request writer panic: %v", v)
 				uc.Close()
-				panicked(v)
+				cc.writerPanicked(v)
 			}
 			close(w.ch)
 		}()

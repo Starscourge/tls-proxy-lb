@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bufio"
+	"errors"
 	"net/http"
 )
 
@@ -77,5 +78,33 @@ func SanitizeTrailer(t http.Header) {
 	}
 	for _, name := range forbiddenTrailers {
 		delete(t, name)
+	}
+}
+
+// ErrUnexpectedSwitch is returned by ReadResponse for a 101 Switching
+// Protocols: the proxy strips Upgrade from every request, so a backend
+// that switches is broken or hostile.
+var ErrUnexpectedSwitch = errors.New("httpx: unexpected 101 Switching Protocols")
+
+// ReadResponse reads a backend's response to req from br. Interim (1xx)
+// responses before it are passed to interim, which relays them to the
+// client; an error from interim ends the read with that error. A 101 is
+// refused with ErrUnexpectedSwitch.
+func ReadResponse(br *bufio.Reader, req *http.Request, interim func(*http.Response) error) (*http.Response, error) {
+	for {
+		resp, err := http.ReadResponse(br, req)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case resp.StatusCode == http.StatusSwitchingProtocols:
+			return nil, ErrUnexpectedSwitch
+		case resp.StatusCode >= 100 && resp.StatusCode < 200:
+			if err := interim(resp); err != nil {
+				return nil, err
+			}
+		default:
+			return resp, nil
+		}
 	}
 }

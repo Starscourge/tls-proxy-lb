@@ -121,6 +121,8 @@ func benchProxy(b *testing.B, backend string, reuse bool) string {
 		c.Upstream.MaxIdlePerBackend = 0
 	}
 	c.Health.Interval = 0
+	// One connection carries every iteration.
+	c.Limits.MaxRequestsPerConn = 0
 	reg := upstream.NewRegistry(c.Upstream.Options())
 	b.Cleanup(reg.Close)
 	chk := health.NewChecker(health.Config{Options: c.Health})

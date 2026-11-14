@@ -266,6 +266,11 @@ func TestAllUnhealthyIs503WithoutDial(t *testing.T) {
 
 // TestPassiveEjection: a run of failures in live traffic takes a backend
 // out of rotation at once; a success breaks the run.
+//
+// The proxy relays a response to the client before it reports the outcome
+// to health, and writes the access-log line after that. So a test that
+// reads health state, or depends on the order of reports, waits for each
+// request's access-log line first: receiving the response is not enough.
 func TestPassiveEjection(t *testing.T) {
 	ho := health.Options{Rise: 1, Fall: 1, PassiveFailures: 3, Eject: time.Hour}
 	t.Run("5xx responses", func(t *testing.T) {
@@ -281,23 +286,28 @@ func TestPassiveEjection(t *testing.T) {
 		})
 		f := startFailover(t, []string{b.addr}, ho, nil)
 		tg := f.chk.Target(b.addr)
-		for i, want := range []int{500, 500, 200, 500, 500} {
+		sent := 0
+		// send makes one request and waits until its outcome has been
+		// reported to health.
+		send := func(want int, what string) {
+			t.Helper()
 			if resp, _ := request(t, f.addr, get("a"), "GET"); resp.StatusCode != want {
-				t.Fatalf("request %d: status %d, want %d", i, resp.StatusCode, want)
+				t.Fatalf("%s: status %d, want %d", what, resp.StatusCode, want)
 			}
+			sent++
+			f.logs.waitAccess(t, sent)
+		}
+		for i, want := range []int{500, 500, 200, 500, 500} {
+			send(want, fmt.Sprintf("request %d", i))
 		}
 		if !tg.Healthy() {
 			t.Fatal("ejected although a success broke the run")
 		}
-		if resp, _ := request(t, f.addr, get("a"), "GET"); resp.StatusCode != 500 {
-			t.Fatalf("third 500 in a row: status %d", resp.StatusCode)
-		}
+		send(500, "third 500 in a row")
 		if tg.State() != health.Ejected {
 			t.Fatalf("state %v after three 500s in a row", tg.State())
 		}
-		if resp, _ := request(t, f.addr, get("a"), "GET"); resp.StatusCode != 503 {
-			t.Fatalf("after ejection: status %d, want 503", resp.StatusCode)
-		}
+		send(503, "after ejection")
 	})
 	t.Run("dial failures", func(t *testing.T) {
 		// A dead backend is ejected by the failures its requests saw, which
@@ -320,13 +330,15 @@ func TestPassiveEjection(t *testing.T) {
 	t.Run("client failures do not count", func(t *testing.T) {
 		b := newCountingOK(t)
 		f := startFailover(t, []string{b.addr}, ho, func(c *config.Config) { c.Timeouts.ClientIO = 50 * time.Millisecond })
-		for range 4 {
+		for i := range 4 {
 			// A body that never arrives: 408, the client's fault.
 			cl := dialClient(t, f.addr)
 			cl.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 10\r\n\r\nab")
 			if resp, _ := cl.read("POST"); resp.StatusCode != http.StatusRequestTimeout {
 				t.Fatalf("status %d", resp.StatusCode)
 			}
+			// Any report to health happens before the access-log line.
+			f.logs.waitAccess(t, i+1)
 		}
 		if !f.chk.Target(b.addr).Healthy() {
 			t.Fatal("client stalls ejected the backend")

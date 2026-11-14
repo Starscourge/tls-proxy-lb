@@ -1194,7 +1194,14 @@ answer 500 and leave every other endpoint alone.
   without moving other keys, exclusion on retry, zero allocations.
 - `internal/conn`: every row of the retry table, the retry limit, 503
   without a dial, passive ejection from 5xx and from dial failures, client
-  stalls not counting, request counts.
+  stalls not counting, request counts. A request's outcome reaches health
+  after its response reaches the client (the client is not kept waiting
+  on bookkeeping) and before its access-log line. So a test that reads
+  health state, or needs reports in request order, waits for each
+  request's access-log line, not just its response. The 5xx ejection
+  test once checked the state as soon as the third 500 arrived and failed
+  in CI when the report had not landed yet; a 20 ms sleep before the
+  report reproduces that every time.
 - `test/integration` runs backends as real processes (`ProcBackend`), so
   `kill -9` and SIGSTOP are the real thing: the kernel resets or silences
   the sockets. The harness turns health checks off unless a test asks for

@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
 # Images for the lab. Build context is the repo root:
 #   docker build -f lab/Dockerfile --target proxy .
-# Targets: proxy, testbackend, loadgen.
+# Targets: proxy, testbackend, loadgen, slowhttptest.
 
 ARG GO_VERSION=1.27.4
 ARG ALPINE_VERSION=3.22
 ARG K6_VERSION=1.3.0
+ARG DEBIAN_VERSION=bookworm-slim
+ARG SLOWHTTPTEST_VERSION=1.8.2-1+b1
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
@@ -31,6 +33,15 @@ RUN apk add --no-cache iproute2 curl
 COPY --from=build /out/testbackend /usr/local/bin/testbackend
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/testbackend"]
+
+# Slow-client attacks for bench/phase8/slowhttptest.sh: slowloris (slow
+# headers), slow body and slow read. Debian packages slowhttptest.
+FROM debian:${DEBIAN_VERSION} AS slowhttptest
+ARG SLOWHTTPTEST_VERSION
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends slowhttptest=${SLOWHTTPTEST_VERSION} \
+ && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["slowhttptest"]
 
 FROM grafana/k6:${K6_VERSION} AS k6
 

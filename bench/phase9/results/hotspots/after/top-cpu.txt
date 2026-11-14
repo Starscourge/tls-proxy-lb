@@ -1,0 +1,39 @@
+File: proxy
+Build ID: a04c64511f6b412ec38835df8c9961423a1ee8b7
+Type: cpu
+Time: 2026-11-14 16:30:11 UTC
+Duration: 30s, Total samples = 113.15s (377.12%)
+Showing nodes accounting for 78.05s, 68.98% of 113.15s total
+Dropped 663 nodes (cum <= 0.57s)
+Showing top 30 nodes out of 155
+      flat  flat%   sum%        cum   cum%
+    63.44s 56.07% 56.07%     63.44s 56.07%  internal/runtime/syscall/linux.Syscall6
+     1.40s  1.24% 57.30%      1.40s  1.24%  runtime.memmove
+     1.13s     1% 58.30%      1.13s     1%  runtime.nanotime (inline)
+     1.10s  0.97% 59.28%      1.10s  0.97%  time.runtimeNow
+     0.88s  0.78% 60.05%      0.88s  0.78%  internal/runtime/maps.memHashAES
+     0.66s  0.58% 60.64%      0.66s  0.58%  indexbytebody
+     0.60s  0.53% 61.17%      0.60s  0.53%  crypto/internal/fips140/aes/gcm.gcmAesEnc
+     0.58s  0.51% 61.68%     93.84s 82.93%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).forward
+     0.52s  0.46% 62.14%      0.57s   0.5%  github.com/Starscourge/tls-proxy-lb/internal/conn.appendJSONString
+     0.51s  0.45% 62.59%      1.94s  1.71%  runtime.mapaccess2_faststr
+     0.49s  0.43% 63.02%      1.62s  1.43%  net/textproto.canonicalMIMEHeaderKey
+     0.47s  0.42% 63.44%      0.92s  0.81%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+     0.46s  0.41% 63.84%      1.14s  1.01%  runtime.(*timer).modify
+     0.42s  0.37% 64.22%      6.65s  5.88%  net/textproto.readMIMEHeader
+     0.41s  0.36% 64.58%      7.70s  6.81%  bufio.(*Reader).Peek
+     0.41s  0.36% 64.94%      9.33s  8.25%  internal/poll.(*FD).Read
+     0.38s  0.34% 65.28%    109.54s 96.81%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+     0.38s  0.34% 65.61%      0.57s   0.5%  slices.insertionSortCmpFunc[go.shape.struct { net/http.key string; net/http.values []string }] (inline)
+     0.36s  0.32% 65.93%     12.25s 10.83%  bufio.(*Reader).fill
+     0.36s  0.32% 66.25%      0.92s  0.81%  fmt.(*pp).printArg
+     0.35s  0.31% 66.56%      1.45s  1.28%  fmt.(*pp).doPrintf
+     0.35s  0.31% 66.87%      2.47s  2.18%  internal/poll.runtime_pollSetDeadline
+     0.34s   0.3% 67.17%      3.07s  2.71%  net/http.Header.writeSubset
+     0.33s  0.29% 67.46%     37.71s 33.33%  io.copyBuffer
+     0.33s  0.29% 67.75%      0.78s  0.69%  runtime.netpollblock
+     0.30s  0.27% 68.02%      1.50s  1.33%  net/http.readTransfer
+     0.28s  0.25% 68.26%     38.36s 33.90%  net/http.(*transferWriter).doBodyCopy
+     0.28s  0.25% 68.51%      0.90s   0.8%  net/http.newTransferWriter
+     0.27s  0.24% 68.75%      1.37s  1.21%  time.Now
+     0.26s  0.23% 68.98%      6.50s  5.74%  crypto/tls.(*Conn).readRecordOrCCS

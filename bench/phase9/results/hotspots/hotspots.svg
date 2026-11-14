@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="884" viewBox="0 0 960 884" role="img">
+<title>Before and after the profile-guided changes</title>
+<style>
+svg { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 12px; }
+.bg { fill: #fcfcfb; } .ink { fill: #0b0b0b; } .ink2 { fill: #52514e; } .muted { fill: #898781; }
+.grid { stroke: #e1e0d9; stroke-width: 1; } .axis { stroke: #c3c2b7; stroke-width: 1; }
+.band { fill: #0b0b0b; fill-opacity: 0.05; }
+.mark { stroke: #52514e; stroke-width: 1; stroke-dasharray: 4 3; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.thin { stroke-width: 1.25; } .dash { stroke-dasharray: 5 3; }
+.s1 { stroke: #2a78d6; fill: #2a78d6; } .s2 { stroke: #eb6834; fill: #eb6834; }
+.s3 { stroke: #1baf7a; fill: #1baf7a; } .s4 { stroke: #eda100; fill: #eda100; }
+.s5 { stroke: #e87ba4; fill: #e87ba4; } .s6 { stroke: #008300; fill: #008300; }
+.s7 { stroke: #6250d6; fill: #6250d6; } .s8 { stroke: #e34948; fill: #e34948; }
+.neutral { stroke: #898781; fill: #898781; } .err { stroke: #d03b3b; fill: #d03b3b; }
+.line.s1, .line.s2, .line.s3, .line.s4, .line.s5, .line.s6, .line.s7, .line.s8, .line.neutral, .line.err { fill: none; }
+.whisker { stroke: #52514e; stroke-width: 1.25; }
+.area { stroke: none; fill-opacity: 0.85; } .gap { fill: none; stroke: #fcfcfb; stroke-width: 2; }
+@media (prefers-color-scheme: dark) {
+  .bg { fill: #1a1a19; } .ink { fill: #f0efec; } .ink2 { fill: #c3c2b7; }
+  .grid { stroke: #2c2c2a; } .axis { stroke: #383835; }
+  .band { fill: #f0efec; fill-opacity: 0.07; } .mark { stroke: #c3c2b7; }
+  .s1 { stroke: #3987e5; fill: #3987e5; } .s2 { stroke: #d95926; fill: #d95926; }
+  .s3 { stroke: #199e70; fill: #199e70; } .s4 { stroke: #c98500; fill: #c98500; }
+  .s5 { stroke: #d55181; fill: #d55181; } .s6 { stroke: #0ca30c; fill: #0ca30c; }
+  .s7 { stroke: #9085e9; fill: #9085e9; } .s8 { stroke: #e66767; fill: #e66767; }
+  .whisker { stroke: #c3c2b7; } .gap { stroke: #1a1a19; }
+}
+</style>
+<rect class="bg" x="0" y="0" width="960" height="884" rx="6"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Before and after the profile-guided changes</text>
+<text class="ink2" x="16" y="46">1 KB over 200 keep-alive connections; median of the runs, whiskers min to max; 4 CPUs each, client and servers on one machine (Intel(R)</text>
+<text class="ink2" x="16" y="64">Core(TM) Ultra 7 155H, 22 vCPUs), so the numbers are relative</text>
+<text class="ink" x="16" y="90" font-weight="600">Throughput, requests per second (wrk at full speed)</text>
+<line class="grid" x1="72.0" y1="236.0" x2="936.0" y2="236.0"/><text class="muted" x="66.0" y="240.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="208.5" x2="936.0" y2="208.5"/><text class="muted" x="66.0" y="212.5" text-anchor="end">20k</text>
+<line class="grid" x1="72.0" y1="181.0" x2="936.0" y2="181.0"/><text class="muted" x="66.0" y="185.0" text-anchor="end">40k</text>
+<line class="grid" x1="72.0" y1="153.5" x2="936.0" y2="153.5"/><text class="muted" x="66.0" y="157.5" text-anchor="end">60k</text>
+<line class="grid" x1="72.0" y1="126.0" x2="936.0" y2="126.0"/><text class="muted" x="66.0" y="130.0" text-anchor="end">80k</text>
+<text class="ink2" x="288.0" y="253.0" text-anchor="middle">before</text>
+<path class="s1" d="M274.0 236.0 V171.0 Q274.0 167.0 278.0 167.0 H298.0 Q302.0 167.0 302.0 171.0 V236.0 Z"><title>tls-proxy-lb, before: 50.2k</title></path>
+<line class="whisker" x1="288.0" y1="168.8" x2="288.0" y2="166.9"/><line class="whisker" x1="285.0" y1="168.8" x2="291.0" y2="168.8"/>
+<line class="whisker" x1="285.0" y1="166.9" x2="291.0" y2="166.9"/>
+<text class="ink2" x="288.0" y="162.9" text-anchor="middle" font-size="10">50.2k</text>
+<text class="ink2" x="720.0" y="253.0" text-anchor="middle">after</text>
+<path class="s1" d="M706.0 236.0 V165.8 Q706.0 161.8 710.0 161.8 H730.0 Q734.0 161.8 734.0 165.8 V236.0 Z"><title>tls-proxy-lb, after: 54k</title></path>
+<line class="whisker" x1="720.0" y1="172.9" x2="720.0" y2="155.9"/><line class="whisker" x1="717.0" y1="172.9" x2="723.0" y2="172.9"/>
+<line class="whisker" x1="717.0" y1="155.9" x2="723.0" y2="155.9"/>
+<text class="ink2" x="720.0" y="151.9" text-anchor="middle" font-size="10">54k</text>
+<line class="axis" x1="72.0" y1="236.0" x2="936.0" y2="236.0"/>
+<text class="ink" x="16" y="290" font-weight="600">p99 latency at 35.1k req/s, the same rate for every variant (wrk2)</text>
+<line class="grid" x1="72.0" y1="436.0" x2="936.0" y2="436.0"/><text class="muted" x="66.0" y="440.0" text-anchor="end">0 ms</text>
+<line class="grid" x1="72.0" y1="414.0" x2="936.0" y2="414.0"/><text class="muted" x="66.0" y="418.0" text-anchor="end">10 ms</text>
+<line class="grid" x1="72.0" y1="392.0" x2="936.0" y2="392.0"/><text class="muted" x="66.0" y="396.0" text-anchor="end">20 ms</text>
+<line class="grid" x1="72.0" y1="370.0" x2="936.0" y2="370.0"/><text class="muted" x="66.0" y="374.0" text-anchor="end">30 ms</text>
+<line class="grid" x1="72.0" y1="348.0" x2="936.0" y2="348.0"/><text class="muted" x="66.0" y="352.0" text-anchor="end">40 ms</text>
+<line class="grid" x1="72.0" y1="326.0" x2="936.0" y2="326.0"/><text class="muted" x="66.0" y="330.0" text-anchor="end">50 ms</text>
+<text class="ink2" x="288.0" y="453.0" text-anchor="middle">before</text>
+<path class="s1" d="M274.0 436.0 V349.9 Q274.0 345.9 278.0 345.9 H298.0 Q302.0 345.9 302.0 349.9 V436.0 Z"><title>tls-proxy-lb, before: 40.98</title></path>
+<line class="whisker" x1="288.0" y1="367.8" x2="288.0" y2="326.0"/><line class="whisker" x1="285.0" y1="367.8" x2="291.0" y2="367.8"/>
+<path class="whisker" fill="none" d="M284.5 331.0 L288.0 326.0 L291.5 331.0"/><text class="ink2" x="290.0" y="321.0" text-anchor="start" font-size="10">max 519 ms</text>
+<rect class="bg" x="271.0" y="332.4" width="34.0" height="12" rx="2"/><text class="ink2" x="288.0" y="341.9" text-anchor="middle" font-size="10">40.98</text>
+<text class="ink2" x="720.0" y="453.0" text-anchor="middle">after</text>
+<path class="s1" d="M706.0 436.0 V429.5 Q706.0 425.5 710.0 425.5 H730.0 Q734.0 425.5 734.0 429.5 V436.0 Z"><title>tls-proxy-lb, after: 4.77</title></path>
+<line class="whisker" x1="720.0" y1="426.3" x2="720.0" y2="412.4"/><line class="whisker" x1="717.0" y1="426.3" x2="723.0" y2="426.3"/>
+<line class="whisker" x1="717.0" y1="412.4" x2="723.0" y2="412.4"/>
+<text class="ink2" x="720.0" y="408.4" text-anchor="middle" font-size="10">4.77</text>
+<line class="axis" x1="72.0" y1="436.0" x2="936.0" y2="436.0"/>
+<text class="ink" x="16" y="490" font-weight="600">Garbage collector&#39;s share of the proxy&#39;s CPU, at full speed</text>
+<line class="grid" x1="72.0" y1="636.0" x2="936.0" y2="636.0"/><text class="muted" x="66.0" y="640.0" text-anchor="end">0%</text>
+<line class="grid" x1="72.0" y1="608.5" x2="936.0" y2="608.5"/><text class="muted" x="66.0" y="612.5" text-anchor="end">1%</text>
+<line class="grid" x1="72.0" y1="581.0" x2="936.0" y2="581.0"/><text class="muted" x="66.0" y="585.0" text-anchor="end">2%</text>
+<line class="grid" x1="72.0" y1="553.5" x2="936.0" y2="553.5"/><text class="muted" x="66.0" y="557.5" text-anchor="end">3%</text>
+<line class="grid" x1="72.0" y1="526.0" x2="936.0" y2="526.0"/><text class="muted" x="66.0" y="530.0" text-anchor="end">4%</text>
+<text class="ink2" x="288.0" y="653.0" text-anchor="middle">before</text>
+<path class="s1" d="M274.0 636.0 V560.8 Q274.0 556.8 278.0 556.8 H298.0 Q302.0 556.8 302.0 560.8 V636.0 Z"><title>tls-proxy-lb, before: 2.88</title></path>
+<line class="whisker" x1="288.0" y1="559.5" x2="288.0" y2="555.8"/><line class="whisker" x1="285.0" y1="559.5" x2="291.0" y2="559.5"/>
+<line class="whisker" x1="285.0" y1="555.8" x2="291.0" y2="555.8"/>
+<text class="ink2" x="288.0" y="551.8" text-anchor="middle" font-size="10">2.88</text>
+<text class="ink2" x="720.0" y="653.0" text-anchor="middle">after</text>
+<path class="s1" d="M706.0 636.0 V599.7 Q706.0 595.7 710.0 595.7 H730.0 Q734.0 595.7 734.0 599.7 V636.0 Z"><title>tls-proxy-lb, after: 1.47</title></path>
+<line class="whisker" x1="720.0" y1="598.6" x2="720.0" y2="594.8"/><line class="whisker" x1="717.0" y1="598.6" x2="723.0" y2="598.6"/>
+<line class="whisker" x1="717.0" y1="594.8" x2="723.0" y2="594.8"/>
+<text class="ink2" x="720.0" y="590.8" text-anchor="middle" font-size="10">1.47</text>
+<line class="axis" x1="72.0" y1="636.0" x2="936.0" y2="636.0"/>
+<text class="ink" x="16" y="690" font-weight="600">Peak memory of the container</text>
+<line class="grid" x1="72.0" y1="836.0" x2="936.0" y2="836.0"/><text class="muted" x="66.0" y="840.0" text-anchor="end">0 MB</text>
+<line class="grid" x1="72.0" y1="808.5" x2="936.0" y2="808.5"/><text class="muted" x="66.0" y="812.5" text-anchor="end">10 MB</text>
+<line class="grid" x1="72.0" y1="781.0" x2="936.0" y2="781.0"/><text class="muted" x="66.0" y="785.0" text-anchor="end">20 MB</text>
+<line class="grid" x1="72.0" y1="753.5" x2="936.0" y2="753.5"/><text class="muted" x="66.0" y="757.5" text-anchor="end">30 MB</text>
+<line class="grid" x1="72.0" y1="726.0" x2="936.0" y2="726.0"/><text class="muted" x="66.0" y="730.0" text-anchor="end">40 MB</text>
+<text class="ink2" x="288.0" y="853.0" text-anchor="middle">before</text>
+<path class="s1" d="M274.0 836.0 V740.6 Q274.0 736.6 278.0 736.6 H298.0 Q302.0 736.6 302.0 740.6 V836.0 Z"><title>tls-proxy-lb, before: 36.14</title></path>
+<text class="ink2" x="288.0" y="732.6" text-anchor="middle" font-size="10">36.14</text>
+<text class="ink2" x="720.0" y="853.0" text-anchor="middle">after</text>
+<path class="s1" d="M706.0 836.0 V750.8 Q706.0 746.8 710.0 746.8 H730.0 Q734.0 746.8 734.0 750.8 V836.0 Z"><title>tls-proxy-lb, after: 32.44</title></path>
+<text class="ink2" x="720.0" y="742.8" text-anchor="middle" font-size="10">32.44</text>
+<line class="axis" x1="72.0" y1="836.0" x2="936.0" y2="836.0"/>
+</svg>

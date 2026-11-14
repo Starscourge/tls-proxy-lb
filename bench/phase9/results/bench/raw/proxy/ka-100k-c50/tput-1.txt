@@ -1,0 +1,112 @@
+==== process 1 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 7 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.98ms    2.07ms  22.61ms   78.56%
+    Req/Sec     2.53k   183.67     2.98k    70.00%
+  Latency Distribution
+     50%    2.54ms
+     75%    3.77ms
+     90%    5.48ms
+     99%   10.61ms
+  37740 requests in 15.00s, 3.61GB read
+Requests/sec:   2515.65
+Transfer/sec:    246.21MB
+==== process 2 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 7 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     3.00ms    2.10ms  24.05ms   78.55%
+    Req/Sec     2.52k   207.29     3.24k    70.67%
+  Latency Distribution
+     50%    2.55ms
+     75%    3.81ms
+     90%    5.49ms
+     99%   10.80ms
+  37575 requests in 15.01s, 3.59GB read
+Requests/sec:   2504.11
+Transfer/sec:    245.08MB
+==== process 3 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.99ms    2.08ms  25.01ms   78.59%
+    Req/Sec     2.16k   155.60     2.70k    72.00%
+  Latency Distribution
+     50%    2.54ms
+     75%    3.82ms
+     90%    5.50ms
+     99%   10.56ms
+  32279 requests in 15.00s, 3.09GB read
+Requests/sec:   2151.51
+Transfer/sec:    210.57MB
+==== process 4 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.98ms    2.08ms  21.97ms   78.99%
+    Req/Sec     2.17k   153.41     2.55k    70.67%
+  Latency Distribution
+     50%    2.53ms
+     75%    3.78ms
+     90%    5.45ms
+     99%   10.72ms
+  32439 requests in 15.00s, 3.10GB read
+Requests/sec:   2162.50
+Transfer/sec:    211.65MB
+==== process 5 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.97ms    2.07ms  19.83ms   78.61%
+    Req/Sec     2.17k   176.99     2.59k    66.67%
+  Latency Distribution
+     50%    2.53ms
+     75%    3.79ms
+     90%    5.43ms
+     99%   10.71ms
+  32456 requests in 15.00s, 3.10GB read
+Requests/sec:   2163.31
+Transfer/sec:    211.73MB
+==== process 6 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.97ms    2.06ms  21.71ms   78.23%
+    Req/Sec     2.17k   171.36     2.79k    66.67%
+  Latency Distribution
+     50%    2.54ms
+     75%    3.79ms
+     90%    5.47ms
+     99%   10.51ms
+  32396 requests in 15.00s, 3.10GB read
+Requests/sec:   2159.11
+Transfer/sec:    211.34MB
+==== process 7 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.98ms    2.07ms  21.47ms   78.48%
+    Req/Sec     2.17k   150.01     2.60k    68.00%
+  Latency Distribution
+     50%    2.56ms
+     75%    3.80ms
+     90%    5.42ms
+     99%   10.77ms
+  32357 requests in 15.00s, 3.09GB read
+Requests/sec:   2156.98
+Transfer/sec:    211.11MB
+==== process 8 of 8
+Running 15s test @ https://default.test:8443/100k
+  1 threads and 6 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     2.98ms    2.10ms  26.23ms   78.99%
+    Req/Sec     2.17k   175.41     2.66k    66.00%
+  Latency Distribution
+     50%    2.53ms
+     75%    3.79ms
+     90%    5.44ms
+     99%   10.74ms
+  32474 requests in 15.00s, 3.10GB read
+Requests/sec:   2164.22
+Transfer/sec:    211.82MB

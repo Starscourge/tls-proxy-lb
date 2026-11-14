@@ -1,0 +1,39 @@
+File: proxy
+Build ID: a04c64511f6b412ec38835df8c9961423a1ee8b7
+Type: delay
+Time: 2026-11-14 16:30:41 UTC
+Duration: 30.02s, Total samples = 991.48ms ( 3.30%)
+Showing nodes accounting for 991.48ms, 100% of 991.48ms total
+Dropped 139 nodes (cum <= 4.96ms)
+Showing top 30 nodes out of 39
+      flat  flat%   sum%        cum   cum%
+  951.08ms 95.92% 95.92%   951.09ms 95.93%  sync.(*Mutex).Unlock (partial-inline)
+   40.40ms  4.08%   100%    40.40ms  4.08%  runtime.unlock (partial-inline)
+         0     0%   100%     5.31ms  0.54%  bufio.(*Reader).fill
+         0     0%   100%   966.17ms 97.45%  github.com/Starscourge/tls-proxy-lb/internal/app.(*handlerSlot).ServeConn
+         0     0%   100%   966.17ms 97.45%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0%   100%      950ms 95.82%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).Serve.gowrap2
+         0     0%   100%   966.17ms 97.45%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+         0     0%   100%     7.83ms  0.79%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).exchange
+         0     0%   100%   959.50ms 96.77%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).forward
+         0     0%   100%   722.64ms 72.88%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).logAccess
+         0     0%   100%   959.70ms 96.80%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+         0     0%   100%   966.17ms 97.45%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+         0     0%   100%   722.64ms 72.88%  github.com/Starscourge/tls-proxy-lb/internal/logbuf.(*Writer).Write
+         0     0%   100%   146.83ms 14.81%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).Get
+         0     0%   100%    79.33ms  8.00%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).Put
+         0     0%   100%   145.82ms 14.71%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).pop
+         0     0%   100%     5.31ms  0.54%  internal/poll.(*FD).Read
+         0     0%   100%     7.86ms  0.79%  internal/poll.ignoringEINTRIO (inline)
+         0     0%   100%     5.31ms  0.54%  net.(*conn).Read
+         0     0%   100%     5.31ms  0.54%  net.(*netFD).Read
+         0     0%   100%     8.87ms  0.89%  runtime.entersyscall
+         0     0%   100%     8.22ms  0.83%  runtime.entersyscallHandleGCWait
+         0     0%   100%     6.18ms  0.62%  runtime.exitsyscallNoP
+         0     0%   100%    15.09ms  1.52%  runtime.findRunnable
+         0     0%   100%     7.01ms  0.71%  runtime.gopreempt_m (inline)
+         0     0%   100%     7.01ms  0.71%  runtime.goschedImpl
+         0     0%   100%     5.25ms  0.53%  runtime.injectglist
+         0     0%   100%     7.02ms  0.71%  runtime.mallocgc
+         0     0%   100%    15.42ms  1.56%  runtime.mcall
+         0     0%   100%     6.89ms  0.69%  runtime.morestack

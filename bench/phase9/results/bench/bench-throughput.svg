@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="756" viewBox="0 0 960 756" role="img">
+<title>Throughput against nginx: median requests per second of the runs, whiskers min to max</title>
+<style>
+svg { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 12px; }
+.bg { fill: #fcfcfb; } .ink { fill: #0b0b0b; } .ink2 { fill: #52514e; } .muted { fill: #898781; }
+.grid { stroke: #e1e0d9; stroke-width: 1; } .axis { stroke: #c3c2b7; stroke-width: 1; }
+.band { fill: #0b0b0b; fill-opacity: 0.05; }
+.mark { stroke: #52514e; stroke-width: 1; stroke-dasharray: 4 3; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.thin { stroke-width: 1.25; } .dash { stroke-dasharray: 5 3; }
+.s1 { stroke: #2a78d6; fill: #2a78d6; } .s2 { stroke: #eb6834; fill: #eb6834; }
+.s3 { stroke: #1baf7a; fill: #1baf7a; } .s4 { stroke: #eda100; fill: #eda100; }
+.s5 { stroke: #e87ba4; fill: #e87ba4; } .s6 { stroke: #008300; fill: #008300; }
+.s7 { stroke: #6250d6; fill: #6250d6; } .s8 { stroke: #e34948; fill: #e34948; }
+.neutral { stroke: #898781; fill: #898781; } .err { stroke: #d03b3b; fill: #d03b3b; }
+.line.s1, .line.s2, .line.s3, .line.s4, .line.s5, .line.s6, .line.s7, .line.s8, .line.neutral, .line.err { fill: none; }
+.whisker { stroke: #52514e; stroke-width: 1.25; }
+.area { stroke: none; fill-opacity: 0.85; } .gap { fill: none; stroke: #fcfcfb; stroke-width: 2; }
+@media (prefers-color-scheme: dark) {
+  .bg { fill: #1a1a19; } .ink { fill: #f0efec; } .ink2 { fill: #c3c2b7; }
+  .grid { stroke: #2c2c2a; } .axis { stroke: #383835; }
+  .band { fill: #f0efec; fill-opacity: 0.07; } .mark { stroke: #c3c2b7; }
+  .s1 { stroke: #3987e5; fill: #3987e5; } .s2 { stroke: #d95926; fill: #d95926; }
+  .s3 { stroke: #199e70; fill: #199e70; } .s4 { stroke: #c98500; fill: #c98500; }
+  .s5 { stroke: #d55181; fill: #d55181; } .s6 { stroke: #0ca30c; fill: #0ca30c; }
+  .s7 { stroke: #9085e9; fill: #9085e9; } .s8 { stroke: #e66767; fill: #e66767; }
+  .whisker { stroke: #c3c2b7; } .gap { stroke: #1a1a19; }
+}
+</style>
+<rect class="bg" x="0" y="0" width="960" height="756" rx="6"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Throughput against nginx: median requests per second of the runs, whiskers min to max</text>
+<text class="ink2" x="16" y="46">wrk at full speed; 4 CPUs each, client and servers on one machine (Intel(R) Core(TM) Ultra 7 155H, 22 vCPUs), so the numbers are relative</text>
+<text class="ink" x="16" y="72" font-weight="600">1 KB, keep-alive</text>
+<rect class="s1" x="16.0" y="79" width="12" height="12" rx="2"/><text class="ink2" x="33.0" y="89">tls-proxy-lb</text>
+<rect class="s2" x="137.4" y="79" width="12" height="12" rx="2"/><text class="ink2" x="154.4" y="89">nginx</text>
+<line class="grid" x1="72.0" y1="248.0" x2="936.0" y2="248.0"/><text class="muted" x="66.0" y="252.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="213.0" x2="936.0" y2="213.0"/><text class="muted" x="66.0" y="217.0" text-anchor="end">20k</text>
+<line class="grid" x1="72.0" y1="178.0" x2="936.0" y2="178.0"/><text class="muted" x="66.0" y="182.0" text-anchor="end">40k</text>
+<line class="grid" x1="72.0" y1="143.0" x2="936.0" y2="143.0"/><text class="muted" x="66.0" y="147.0" text-anchor="end">60k</text>
+<line class="grid" x1="72.0" y1="108.0" x2="936.0" y2="108.0"/><text class="muted" x="66.0" y="112.0" text-anchor="end">80k</text>
+<text class="ink2" x="216.0" y="265.0" text-anchor="middle">50 connections: 74% of nginx</text>
+<path class="s1" d="M187.0 248.0 V156.9 Q187.0 152.9 191.0 152.9 H211.0 Q215.0 152.9 215.0 156.9 V248.0 Z"><title>tls-proxy-lb, 50 connections: 74% of nginx: 54.3k</title></path>
+<line class="whisker" x1="201.0" y1="153.8" x2="201.0" y2="151.5"/><line class="whisker" x1="198.0" y1="153.8" x2="204.0" y2="153.8"/>
+<line class="whisker" x1="198.0" y1="151.5" x2="204.0" y2="151.5"/>
+<text class="ink2" x="201.0" y="147.5" text-anchor="middle" font-size="10">54.3k</text>
+<path class="s2" d="M217.0 248.0 V124.4 Q217.0 120.4 221.0 120.4 H241.0 Q245.0 120.4 245.0 124.4 V248.0 Z"><title>nginx, 50 connections: 74% of nginx: 72.9k</title></path>
+<line class="whisker" x1="231.0" y1="121.3" x2="231.0" y2="119.7"/><line class="whisker" x1="228.0" y1="121.3" x2="234.0" y2="121.3"/>
+<line class="whisker" x1="228.0" y1="119.7" x2="234.0" y2="119.7"/>
+<text class="ink2" x="231.0" y="115.7" text-anchor="middle" font-size="10">72.9k</text>
+<text class="ink2" x="504.0" y="265.0" text-anchor="middle">200 connections: 63% of nginx</text>
+<path class="s1" d="M475.0 248.0 V173.0 Q475.0 169.0 479.0 169.0 H499.0 Q503.0 169.0 503.0 173.0 V248.0 Z"><title>tls-proxy-lb, 200 connections: 63% of nginx: 45.2k</title></path>
+<line class="whisker" x1="489.0" y1="170.9" x2="489.0" y2="165.0"/><line class="whisker" x1="486.0" y1="170.9" x2="492.0" y2="170.9"/>
+<line class="whisker" x1="486.0" y1="165.0" x2="492.0" y2="165.0"/>
+<text class="ink2" x="489.0" y="161.0" text-anchor="middle" font-size="10">45.2k</text>
+<path class="s2" d="M505.0 248.0 V126.4 Q505.0 122.4 509.0 122.4 H529.0 Q533.0 122.4 533.0 126.4 V248.0 Z"><title>nginx, 200 connections: 63% of nginx: 71.8k</title></path>
+<line class="whisker" x1="519.0" y1="133.0" x2="519.0" y2="122.1"/><line class="whisker" x1="516.0" y1="133.0" x2="522.0" y2="133.0"/>
+<line class="whisker" x1="516.0" y1="122.1" x2="522.0" y2="122.1"/>
+<text class="ink2" x="519.0" y="118.1" text-anchor="middle" font-size="10">71.8k</text>
+<text class="ink2" x="792.0" y="265.0" text-anchor="middle">1000 connections: 82% of nginx</text>
+<path class="s1" d="M763.0 248.0 V174.2 Q763.0 170.2 767.0 170.2 H787.0 Q791.0 170.2 791.0 174.2 V248.0 Z"><title>tls-proxy-lb, 1000 connections: 82% of nginx: 44.5k</title></path>
+<line class="whisker" x1="777.0" y1="170.5" x2="777.0" y2="169.0"/><line class="whisker" x1="774.0" y1="170.5" x2="780.0" y2="170.5"/>
+<line class="whisker" x1="774.0" y1="169.0" x2="780.0" y2="169.0"/>
+<text class="ink2" x="777.0" y="165.0" text-anchor="middle" font-size="10">44.5k</text>
+<path class="s2" d="M793.0 248.0 V157.0 Q793.0 153.0 797.0 153.0 H817.0 Q821.0 153.0 821.0 157.0 V248.0 Z"><title>nginx, 1000 connections: 82% of nginx: 54.3k</title></path>
+<line class="whisker" x1="807.0" y1="153.5" x2="807.0" y2="152.1"/><line class="whisker" x1="804.0" y1="153.5" x2="810.0" y2="153.5"/>
+<line class="whisker" x1="804.0" y1="152.1" x2="810.0" y2="152.1"/>
+<text class="ink2" x="807.0" y="148.1" text-anchor="middle" font-size="10">54.3k</text>
+<line class="axis" x1="72.0" y1="248.0" x2="936.0" y2="248.0"/>
+<text class="ink" x="16" y="302" font-weight="600">1 KB, new TLS connection per request</text>
+<rect class="s1" x="16.0" y="309" width="12" height="12" rx="2"/><text class="ink2" x="33.0" y="319">tls-proxy-lb</text>
+<rect class="s2" x="137.4" y="309" width="12" height="12" rx="2"/><text class="ink2" x="154.4" y="319">nginx</text>
+<line class="grid" x1="72.0" y1="478.0" x2="936.0" y2="478.0"/><text class="muted" x="66.0" y="482.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="431.3" x2="936.0" y2="431.3"/><text class="muted" x="66.0" y="435.3" text-anchor="end">2k</text>
+<line class="grid" x1="72.0" y1="384.7" x2="936.0" y2="384.7"/><text class="muted" x="66.0" y="388.7" text-anchor="end">4k</text>
+<line class="grid" x1="72.0" y1="338.0" x2="936.0" y2="338.0"/><text class="muted" x="66.0" y="342.0" text-anchor="end">6k</text>
+<text class="ink2" x="216.0" y="495.0" text-anchor="middle">50 connections: 72% of nginx</text>
+<path class="s1" d="M187.0 478.0 V408.0 Q187.0 404.0 191.0 404.0 H211.0 Q215.0 404.0 215.0 408.0 V478.0 Z"><title>tls-proxy-lb, 50 connections: 72% of nginx: 3.17k</title></path>
+<line class="whisker" x1="201.0" y1="404.4" x2="201.0" y2="391.3"/><line class="whisker" x1="198.0" y1="404.4" x2="204.0" y2="404.4"/>
+<line class="whisker" x1="198.0" y1="391.3" x2="204.0" y2="391.3"/>
+<text class="ink2" x="201.0" y="387.3" text-anchor="middle" font-size="10">3.17k</text>
+<path class="s2" d="M217.0 478.0 V379.1 Q217.0 375.1 221.0 375.1 H241.0 Q245.0 375.1 245.0 379.1 V478.0 Z"><title>nginx, 50 connections: 72% of nginx: 4.41k</title></path>
+<line class="whisker" x1="231.0" y1="379.1" x2="231.0" y2="373.6"/><line class="whisker" x1="228.0" y1="379.1" x2="234.0" y2="379.1"/>
+<line class="whisker" x1="228.0" y1="373.6" x2="234.0" y2="373.6"/>
+<text class="ink2" x="231.0" y="369.6" text-anchor="middle" font-size="10">4.41k</text>
+<text class="ink2" x="504.0" y="495.0" text-anchor="middle">200 connections: 87% of nginx</text>
+<path class="s1" d="M475.0 478.0 V382.9 Q475.0 378.9 479.0 378.9 H499.0 Q503.0 378.9 503.0 382.9 V478.0 Z"><title>tls-proxy-lb, 200 connections: 87% of nginx: 4.25k</title></path>
+<line class="whisker" x1="489.0" y1="381.2" x2="489.0" y2="378.9"/><line class="whisker" x1="486.0" y1="381.2" x2="492.0" y2="381.2"/>
+<line class="whisker" x1="486.0" y1="378.9" x2="492.0" y2="378.9"/>
+<text class="ink2" x="489.0" y="374.9" text-anchor="middle" font-size="10">4.25k</text>
+<path class="s2" d="M505.0 478.0 V368.3 Q505.0 364.3 509.0 364.3 H529.0 Q533.0 364.3 533.0 368.3 V478.0 Z"><title>nginx, 200 connections: 87% of nginx: 4.87k</title></path>
+<line class="whisker" x1="519.0" y1="366.2" x2="519.0" y2="357.6"/><line class="whisker" x1="516.0" y1="366.2" x2="522.0" y2="366.2"/>
+<line class="whisker" x1="516.0" y1="357.6" x2="522.0" y2="357.6"/>
+<text class="ink2" x="519.0" y="353.6" text-anchor="middle" font-size="10">4.87k</text>
+<text class="ink2" x="792.0" y="495.0" text-anchor="middle">1000 connections: 108% of nginx</text>
+<path class="s1" d="M763.0 478.0 V360.9 Q763.0 356.9 767.0 356.9 H787.0 Q791.0 356.9 791.0 360.9 V478.0 Z"><title>tls-proxy-lb, 1000 connections: 108% of nginx: 5.19k</title></path>
+<line class="whisker" x1="777.0" y1="357.0" x2="777.0" y2="354.5"/><line class="whisker" x1="774.0" y1="357.0" x2="780.0" y2="357.0"/>
+<line class="whisker" x1="774.0" y1="354.5" x2="780.0" y2="354.5"/>
+<text class="ink2" x="777.0" y="350.5" text-anchor="middle" font-size="10">5.19k</text>
+<path class="s2" d="M793.0 478.0 V369.8 Q793.0 365.8 797.0 365.8 H817.0 Q821.0 365.8 821.0 369.8 V478.0 Z"><title>nginx, 1000 connections: 108% of nginx: 4.81k</title></path>
+<line class="whisker" x1="807.0" y1="366.1" x2="807.0" y2="365.4"/><line class="whisker" x1="804.0" y1="366.1" x2="810.0" y2="366.1"/>
+<line class="whisker" x1="804.0" y1="365.4" x2="810.0" y2="365.4"/>
+<text class="ink2" x="807.0" y="361.4" text-anchor="middle" font-size="10">4.81k</text>
+<line class="axis" x1="72.0" y1="478.0" x2="936.0" y2="478.0"/>
+<text class="ink" x="16" y="532" font-weight="600">100 KB, keep-alive</text>
+<rect class="s1" x="16.0" y="539" width="12" height="12" rx="2"/><text class="ink2" x="33.0" y="549">tls-proxy-lb</text>
+<rect class="s2" x="137.4" y="539" width="12" height="12" rx="2"/><text class="ink2" x="154.4" y="549">nginx</text>
+<line class="grid" x1="72.0" y1="708.0" x2="936.0" y2="708.0"/><text class="muted" x="66.0" y="712.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="680.0" x2="936.0" y2="680.0"/><text class="muted" x="66.0" y="684.0" text-anchor="end">5k</text>
+<line class="grid" x1="72.0" y1="652.0" x2="936.0" y2="652.0"/><text class="muted" x="66.0" y="656.0" text-anchor="end">10k</text>
+<line class="grid" x1="72.0" y1="624.0" x2="936.0" y2="624.0"/><text class="muted" x="66.0" y="628.0" text-anchor="end">15k</text>
+<line class="grid" x1="72.0" y1="596.0" x2="936.0" y2="596.0"/><text class="muted" x="66.0" y="600.0" text-anchor="end">20k</text>
+<line class="grid" x1="72.0" y1="568.0" x2="936.0" y2="568.0"/><text class="muted" x="66.0" y="572.0" text-anchor="end">25k</text>
+<text class="ink2" x="216.0" y="725.0" text-anchor="middle">50 connections: 84% of nginx</text>
+<path class="s1" d="M187.0 708.0 V611.3 Q187.0 607.3 191.0 607.3 H211.0 Q215.0 607.3 215.0 611.3 V708.0 Z"><title>tls-proxy-lb, 50 connections: 84% of nginx: 18k</title></path>
+<line class="whisker" x1="201.0" y1="607.6" x2="201.0" y2="606.6"/><line class="whisker" x1="198.0" y1="607.6" x2="204.0" y2="607.6"/>
+<line class="whisker" x1="198.0" y1="606.6" x2="204.0" y2="606.6"/>
+<text class="ink2" x="201.0" y="602.6" text-anchor="middle" font-size="10">18k</text>
+<path class="s2" d="M217.0 708.0 V592.3 Q217.0 588.3 221.0 588.3 H241.0 Q245.0 588.3 245.0 592.3 V708.0 Z"><title>nginx, 50 connections: 84% of nginx: 21.4k</title></path>
+<line class="whisker" x1="231.0" y1="594.0" x2="231.0" y2="587.9"/><line class="whisker" x1="228.0" y1="594.0" x2="234.0" y2="594.0"/>
+<line class="whisker" x1="228.0" y1="587.9" x2="234.0" y2="587.9"/>
+<text class="ink2" x="231.0" y="583.9" text-anchor="middle" font-size="10">21.4k</text>
+<text class="ink2" x="504.0" y="725.0" text-anchor="middle">200 connections: 91% of nginx</text>
+<path class="s1" d="M475.0 708.0 V617.2 Q475.0 613.2 479.0 613.2 H499.0 Q503.0 613.2 503.0 617.2 V708.0 Z"><title>tls-proxy-lb, 200 connections: 91% of nginx: 16.9k</title></path>
+<line class="whisker" x1="489.0" y1="614.9" x2="489.0" y2="603.6"/><line class="whisker" x1="486.0" y1="614.9" x2="492.0" y2="614.9"/>
+<line class="whisker" x1="486.0" y1="603.6" x2="492.0" y2="603.6"/>
+<text class="ink2" x="489.0" y="599.6" text-anchor="middle" font-size="10">16.9k</text>
+<path class="s2" d="M505.0 708.0 V608.1 Q505.0 604.1 509.0 604.1 H529.0 Q533.0 604.1 533.0 608.1 V708.0 Z"><title>nginx, 200 connections: 91% of nginx: 18.6k</title></path>
+<line class="whisker" x1="519.0" y1="604.4" x2="519.0" y2="604.0"/><line class="whisker" x1="516.0" y1="604.4" x2="522.0" y2="604.4"/>
+<line class="whisker" x1="516.0" y1="604.0" x2="522.0" y2="604.0"/>
+<text class="ink2" x="519.0" y="600.0" text-anchor="middle" font-size="10">18.6k</text>
+<text class="ink2" x="792.0" y="725.0" text-anchor="middle">1000 connections: 85% of nginx</text>
+<path class="s1" d="M763.0 708.0 V624.7 Q763.0 620.7 767.0 620.7 H787.0 Q791.0 620.7 791.0 624.7 V708.0 Z"><title>tls-proxy-lb, 1000 connections: 85% of nginx: 15.6k</title></path>
+<line class="whisker" x1="777.0" y1="620.7" x2="777.0" y2="619.9"/><line class="whisker" x1="774.0" y1="620.7" x2="780.0" y2="620.7"/>
+<line class="whisker" x1="774.0" y1="619.9" x2="780.0" y2="619.9"/>
+<text class="ink2" x="777.0" y="615.9" text-anchor="middle" font-size="10">15.6k</text>
+<path class="s2" d="M793.0 708.0 V609.4 Q793.0 605.4 797.0 605.4 H817.0 Q821.0 605.4 821.0 609.4 V708.0 Z"><title>nginx, 1000 connections: 85% of nginx: 18.3k</title></path>
+<line class="whisker" x1="807.0" y1="605.6" x2="807.0" y2="605.3"/><line class="whisker" x1="804.0" y1="605.6" x2="810.0" y2="605.6"/>
+<line class="whisker" x1="804.0" y1="605.3" x2="810.0" y2="605.3"/>
+<text class="ink2" x="807.0" y="601.3" text-anchor="middle" font-size="10">18.3k</text>
+<line class="axis" x1="72.0" y1="708.0" x2="936.0" y2="708.0"/>
+</svg>

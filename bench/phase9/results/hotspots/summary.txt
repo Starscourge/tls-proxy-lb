@@ -1,0 +1,5 @@
+                                                    req/s  vs 1st     p50                  p99  vs 1st    p99.9   GC %  µs/req  peak MB  errors
+before                                50191 (48887-50260)   +0.0%    1.37 40.98 (31.01-519.29)   +0.0%   147.94   2.88    76.0     36.1       0
+after                                 53986 (45902-58240)   +7.6%    1.30    4.77 (4.43-10.75)  -88.4%     9.63   1.47    67.3     32.4       0
+
+latency runs at 35133 req/s for every variant (70% of the first one's median throughput)

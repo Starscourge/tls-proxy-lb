@@ -1,0 +1,6 @@
+wall_ms=15275
+tcp_opens=276
+cpu_usec=56267940
+mem_peak_bytes=33640448
+gc_cpu_s=0.861393
+go_busy_cpu_s=60.499000

@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="884" viewBox="0 0 960 884" role="img">
+<title>Tuning the garbage collector</title>
+<style>
+svg { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 12px; }
+.bg { fill: #fcfcfb; } .ink { fill: #0b0b0b; } .ink2 { fill: #52514e; } .muted { fill: #898781; }
+.grid { stroke: #e1e0d9; stroke-width: 1; } .axis { stroke: #c3c2b7; stroke-width: 1; }
+.band { fill: #0b0b0b; fill-opacity: 0.05; }
+.mark { stroke: #52514e; stroke-width: 1; stroke-dasharray: 4 3; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.thin { stroke-width: 1.25; } .dash { stroke-dasharray: 5 3; }
+.s1 { stroke: #2a78d6; fill: #2a78d6; } .s2 { stroke: #eb6834; fill: #eb6834; }
+.s3 { stroke: #1baf7a; fill: #1baf7a; } .s4 { stroke: #eda100; fill: #eda100; }
+.s5 { stroke: #e87ba4; fill: #e87ba4; } .s6 { stroke: #008300; fill: #008300; }
+.s7 { stroke: #6250d6; fill: #6250d6; } .s8 { stroke: #e34948; fill: #e34948; }
+.neutral { stroke: #898781; fill: #898781; } .err { stroke: #d03b3b; fill: #d03b3b; }
+.line.s1, .line.s2, .line.s3, .line.s4, .line.s5, .line.s6, .line.s7, .line.s8, .line.neutral, .line.err { fill: none; }
+.whisker { stroke: #52514e; stroke-width: 1.25; }
+.area { stroke: none; fill-opacity: 0.85; } .gap { fill: none; stroke: #fcfcfb; stroke-width: 2; }
+@media (prefers-color-scheme: dark) {
+  .bg { fill: #1a1a19; } .ink { fill: #f0efec; } .ink2 { fill: #c3c2b7; }
+  .grid { stroke: #2c2c2a; } .axis { stroke: #383835; }
+  .band { fill: #f0efec; fill-opacity: 0.07; } .mark { stroke: #c3c2b7; }
+  .s1 { stroke: #3987e5; fill: #3987e5; } .s2 { stroke: #d95926; fill: #d95926; }
+  .s3 { stroke: #199e70; fill: #199e70; } .s4 { stroke: #c98500; fill: #c98500; }
+  .s5 { stroke: #d55181; fill: #d55181; } .s6 { stroke: #0ca30c; fill: #0ca30c; }
+  .s7 { stroke: #9085e9; fill: #9085e9; } .s8 { stroke: #e66767; fill: #e66767; }
+  .whisker { stroke: #c3c2b7; } .gap { stroke: #1a1a19; }
+}
+</style>
+<rect class="bg" x="0" y="0" width="960" height="884" rx="6"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Tuning the garbage collector</text>
+<text class="ink2" x="16" y="46">1 KB over 200 keep-alive connections; median of the runs, whiskers min to max; 4 CPUs each, client and servers on one machine (Intel(R)</text>
+<text class="ink2" x="16" y="64">Core(TM) Ultra 7 155H, 22 vCPUs), so the numbers are relative</text>
+<text class="ink" x="16" y="90" font-weight="600">Throughput, requests per second (wrk at full speed)</text>
+<line class="grid" x1="72.0" y1="236.0" x2="936.0" y2="236.0"/><text class="muted" x="66.0" y="240.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="208.5" x2="936.0" y2="208.5"/><text class="muted" x="66.0" y="212.5" text-anchor="end">20k</text>
+<line class="grid" x1="72.0" y1="181.0" x2="936.0" y2="181.0"/><text class="muted" x="66.0" y="185.0" text-anchor="end">40k</text>
+<line class="grid" x1="72.0" y1="153.5" x2="936.0" y2="153.5"/><text class="muted" x="66.0" y="157.5" text-anchor="end">60k</text>
+<line class="grid" x1="72.0" y1="126.0" x2="936.0" y2="126.0"/><text class="muted" x="66.0" y="130.0" text-anchor="end">80k</text>
+<text class="ink2" x="158.4" y="253.0" text-anchor="middle">GOGC=100 (default)</text>
+<path class="s1" d="M144.4 236.0 V166.3 Q144.4 162.3 148.4 162.3 H168.4 Q172.4 162.3 172.4 166.3 V236.0 Z"><title>tls-proxy-lb, GOGC=100 (default): 53.6k</title></path>
+<line class="whisker" x1="158.4" y1="162.5" x2="158.4" y2="155.7"/><line class="whisker" x1="155.4" y1="162.5" x2="161.4" y2="162.5"/>
+<line class="whisker" x1="155.4" y1="155.7" x2="161.4" y2="155.7"/>
+<text class="ink2" x="158.4" y="151.7" text-anchor="middle" font-size="10">53.6k</text>
+<text class="ink2" x="331.2" y="253.0" text-anchor="middle">GOGC=50</text>
+<path class="s1" d="M317.2 236.0 V173.6 Q317.2 169.6 321.2 169.6 H341.2 Q345.2 169.6 345.2 173.6 V236.0 Z"><title>tls-proxy-lb, GOGC=50: 48.3k</title></path>
+<line class="whisker" x1="331.2" y1="172.0" x2="331.2" y2="159.1"/><line class="whisker" x1="328.2" y1="172.0" x2="334.2" y2="172.0"/>
+<line class="whisker" x1="328.2" y1="159.1" x2="334.2" y2="159.1"/>
+<text class="ink2" x="331.2" y="155.1" text-anchor="middle" font-size="10">48.3k</text>
+<text class="ink2" x="504.0" y="253.0" text-anchor="middle">GOGC=200</text>
+<path class="s1" d="M490.0 236.0 V167.7 Q490.0 163.7 494.0 163.7 H514.0 Q518.0 163.7 518.0 167.7 V236.0 Z"><title>tls-proxy-lb, GOGC=200: 52.5k</title></path>
+<line class="whisker" x1="504.0" y1="164.6" x2="504.0" y2="161.7"/><line class="whisker" x1="501.0" y1="164.6" x2="507.0" y2="164.6"/>
+<line class="whisker" x1="501.0" y1="161.7" x2="507.0" y2="161.7"/>
+<text class="ink2" x="504.0" y="157.7" text-anchor="middle" font-size="10">52.5k</text>
+<text class="ink2" x="676.8" y="253.0" text-anchor="middle">GOGC=400</text>
+<path class="s1" d="M662.8 236.0 V173.6 Q662.8 169.6 666.8 169.6 H686.8 Q690.8 169.6 690.8 173.6 V236.0 Z"><title>tls-proxy-lb, GOGC=400: 48.3k</title></path>
+<line class="whisker" x1="676.8" y1="170.9" x2="676.8" y2="164.9"/><line class="whisker" x1="673.8" y1="170.9" x2="679.8" y2="170.9"/>
+<line class="whisker" x1="673.8" y1="164.9" x2="679.8" y2="164.9"/>
+<text class="ink2" x="676.8" y="160.9" text-anchor="middle" font-size="10">48.3k</text>
+<text class="ink2" x="849.6" y="253.0" text-anchor="middle">GOGC=off,</text>
+<text class="ink2" x="849.6" y="267.0" text-anchor="middle">GOMEMLIMIT=256MiB</text>
+<path class="s1" d="M835.6 236.0 V175.6 Q835.6 171.6 839.6 171.6 H859.6 Q863.6 171.6 863.6 175.6 V236.0 Z"><title>tls-proxy-lb, GOGC=off, GOMEMLIMIT=256MiB: 46.8k</title></path>
+<line class="whisker" x1="849.6" y1="172.3" x2="849.6" y2="155.6"/><line class="whisker" x1="846.6" y1="172.3" x2="852.6" y2="172.3"/>
+<line class="whisker" x1="846.6" y1="155.6" x2="852.6" y2="155.6"/>
+<text class="ink2" x="849.6" y="151.6" text-anchor="middle" font-size="10">46.8k</text>
+<line class="axis" x1="72.0" y1="236.0" x2="936.0" y2="236.0"/>
+<text class="ink" x="16" y="290" font-weight="600">p99 latency at 37.5k req/s, the same rate for every variant (wrk2)</text>
+<line class="grid" x1="72.0" y1="436.0" x2="936.0" y2="436.0"/><text class="muted" x="66.0" y="440.0" text-anchor="end">0 ms</text>
+<line class="grid" x1="72.0" y1="399.3" x2="936.0" y2="399.3"/><text class="muted" x="66.0" y="403.3" text-anchor="end">200 ms</text>
+<line class="grid" x1="72.0" y1="362.7" x2="936.0" y2="362.7"/><text class="muted" x="66.0" y="366.7" text-anchor="end">400 ms</text>
+<line class="grid" x1="72.0" y1="326.0" x2="936.0" y2="326.0"/><text class="muted" x="66.0" y="330.0" text-anchor="end">600 ms</text>
+<text class="ink2" x="158.4" y="453.0" text-anchor="middle">GOGC=100 (default)</text>
+<path class="s1" d="M144.4 436.0 V435.3 Q144.4 434.7 145.1 434.7 H171.7 Q172.4 434.7 172.4 435.3 V436.0 Z"><title>tls-proxy-lb, GOGC=100 (default): 7.21</title></path>
+<line class="whisker" x1="158.4" y1="435.4" x2="158.4" y2="433.1"/><line class="whisker" x1="155.4" y1="435.4" x2="161.4" y2="435.4"/>
+<line class="whisker" x1="155.4" y1="433.1" x2="161.4" y2="433.1"/>
+<text class="ink2" x="158.4" y="429.1" text-anchor="middle" font-size="10">7.21</text>
+<text class="ink2" x="331.2" y="453.0" text-anchor="middle">GOGC=50</text>
+<path class="s1" d="M317.2 436.0 V358.8 Q317.2 354.8 321.2 354.8 H341.2 Q345.2 354.8 345.2 358.8 V436.0 Z"><title>tls-proxy-lb, GOGC=50: 443</title></path>
+<line class="whisker" x1="331.2" y1="434.8" x2="331.2" y2="334.8"/><line class="whisker" x1="328.2" y1="434.8" x2="334.2" y2="434.8"/>
+<line class="whisker" x1="328.2" y1="334.8" x2="334.2" y2="334.8"/>
+<text class="ink2" x="331.2" y="330.8" text-anchor="middle" font-size="10">443</text>
+<text class="ink2" x="504.0" y="453.0" text-anchor="middle">GOGC=200</text>
+<path class="s1" d="M490.0 436.0 V435.1 Q490.0 434.3 490.9 434.3 H517.1 Q518.0 434.3 518.0 435.1 V436.0 Z"><title>tls-proxy-lb, GOGC=200: 9.41</title></path>
+<line class="whisker" x1="504.0" y1="434.6" x2="504.0" y2="433.8"/><line class="whisker" x1="501.0" y1="434.6" x2="507.0" y2="434.6"/>
+<line class="whisker" x1="501.0" y1="433.8" x2="507.0" y2="433.8"/>
+<text class="ink2" x="504.0" y="429.8" text-anchor="middle" font-size="10">9.41</text>
+<text class="ink2" x="676.8" y="453.0" text-anchor="middle">GOGC=400</text>
+<path class="s1" d="M662.8 436.0 V435.4 Q662.8 434.8 663.4 434.8 H690.2 Q690.8 434.8 690.8 435.4 V436.0 Z"><title>tls-proxy-lb, GOGC=400: 6.74</title></path>
+<line class="whisker" x1="676.8" y1="434.8" x2="676.8" y2="433.8"/><line class="whisker" x1="673.8" y1="434.8" x2="679.8" y2="434.8"/>
+<line class="whisker" x1="673.8" y1="433.8" x2="679.8" y2="433.8"/>
+<text class="ink2" x="676.8" y="429.8" text-anchor="middle" font-size="10">6.74</text>
+<text class="ink2" x="849.6" y="453.0" text-anchor="middle">GOGC=off,</text>
+<text class="ink2" x="849.6" y="467.0" text-anchor="middle">GOMEMLIMIT=256MiB</text>
+<path class="s1" d="M835.6 436.0 V435.7 Q835.6 435.4 835.9 435.4 H863.3 Q863.6 435.4 863.6 435.7 V436.0 Z"><title>tls-proxy-lb, GOGC=off, GOMEMLIMIT=256MiB: 3.52</title></path>
+<line class="whisker" x1="849.6" y1="435.4" x2="849.6" y2="435.0"/><line class="whisker" x1="846.6" y1="435.4" x2="852.6" y2="435.4"/>
+<line class="whisker" x1="846.6" y1="435.0" x2="852.6" y2="435.0"/>
+<text class="ink2" x="849.6" y="431.0" text-anchor="middle" font-size="10">3.52</text>
+<line class="axis" x1="72.0" y1="436.0" x2="936.0" y2="436.0"/>
+<text class="ink" x="16" y="490" font-weight="600">Garbage collector&#39;s share of the proxy&#39;s CPU, at full speed</text>
+<line class="grid" x1="72.0" y1="636.0" x2="936.0" y2="636.0"/><text class="muted" x="66.0" y="640.0" text-anchor="end">0%</text>
+<line class="grid" x1="72.0" y1="608.5" x2="936.0" y2="608.5"/><text class="muted" x="66.0" y="612.5" text-anchor="end">1%</text>
+<line class="grid" x1="72.0" y1="581.0" x2="936.0" y2="581.0"/><text class="muted" x="66.0" y="585.0" text-anchor="end">2%</text>
+<line class="grid" x1="72.0" y1="553.5" x2="936.0" y2="553.5"/><text class="muted" x="66.0" y="557.5" text-anchor="end">3%</text>
+<line class="grid" x1="72.0" y1="526.0" x2="936.0" y2="526.0"/><text class="muted" x="66.0" y="530.0" text-anchor="end">4%</text>
+<text class="ink2" x="158.4" y="653.0" text-anchor="middle">GOGC=100 (default)</text>
+<path class="s1" d="M144.4 636.0 V600.8 Q144.4 596.8 148.4 596.8 H168.4 Q172.4 596.8 172.4 600.8 V636.0 Z"><title>tls-proxy-lb, GOGC=100 (default): 1.42</title></path>
+<line class="whisker" x1="158.4" y1="596.9" x2="158.4" y2="596.1"/><line class="whisker" x1="155.4" y1="596.9" x2="161.4" y2="596.9"/>
+<line class="whisker" x1="155.4" y1="596.1" x2="161.4" y2="596.1"/>
+<text class="ink2" x="158.4" y="592.1" text-anchor="middle" font-size="10">1.42</text>
+<text class="ink2" x="331.2" y="653.0" text-anchor="middle">GOGC=50</text>
+<path class="s1" d="M317.2 636.0 V559.7 Q317.2 555.7 321.2 555.7 H341.2 Q345.2 555.7 345.2 559.7 V636.0 Z"><title>tls-proxy-lb, GOGC=50: 2.92</title></path>
+<line class="whisker" x1="331.2" y1="560.2" x2="331.2" y2="552.4"/><line class="whisker" x1="328.2" y1="560.2" x2="334.2" y2="560.2"/>
+<line class="whisker" x1="328.2" y1="552.4" x2="334.2" y2="552.4"/>
+<text class="ink2" x="331.2" y="548.4" text-anchor="middle" font-size="10">2.92</text>
+<text class="ink2" x="504.0" y="653.0" text-anchor="middle">GOGC=200</text>
+<path class="s1" d="M490.0 636.0 V620.4 Q490.0 616.4 494.0 616.4 H514.0 Q518.0 616.4 518.0 620.4 V636.0 Z"><title>tls-proxy-lb, GOGC=200: 0.713</title></path>
+<line class="whisker" x1="504.0" y1="616.6" x2="504.0" y2="615.8"/><line class="whisker" x1="501.0" y1="616.6" x2="507.0" y2="616.6"/>
+<line class="whisker" x1="501.0" y1="615.8" x2="507.0" y2="615.8"/>
+<text class="ink2" x="504.0" y="611.8" text-anchor="middle" font-size="10">0.713</text>
+<text class="ink2" x="676.8" y="653.0" text-anchor="middle">GOGC=400</text>
+<path class="s1" d="M662.8 636.0 V629.4 Q662.8 625.4 666.8 625.4 H686.8 Q690.8 625.4 690.8 629.4 V636.0 Z"><title>tls-proxy-lb, GOGC=400: 0.387</title></path>
+<line class="whisker" x1="676.8" y1="625.6" x2="676.8" y2="624.8"/><line class="whisker" x1="673.8" y1="625.6" x2="679.8" y2="625.6"/>
+<line class="whisker" x1="673.8" y1="624.8" x2="679.8" y2="624.8"/>
+<text class="ink2" x="676.8" y="620.8" text-anchor="middle" font-size="10">0.387</text>
+<text class="ink2" x="849.6" y="653.0" text-anchor="middle">GOGC=off,</text>
+<text class="ink2" x="849.6" y="667.0" text-anchor="middle">GOMEMLIMIT=256MiB</text>
+<path class="s1" d="M835.6 636.0 V635.2 Q835.6 634.4 836.4 634.4 H862.8 Q863.6 634.4 863.6 635.2 V636.0 Z"><title>tls-proxy-lb, GOGC=off, GOMEMLIMIT=256MiB: 0.057</title></path>
+<line class="whisker" x1="849.6" y1="634.6" x2="849.6" y2="634.0"/><line class="whisker" x1="846.6" y1="634.6" x2="852.6" y2="634.6"/>
+<line class="whisker" x1="846.6" y1="634.0" x2="852.6" y2="634.0"/>
+<text class="ink2" x="849.6" y="630.0" text-anchor="middle" font-size="10">0.057</text>
+<line class="axis" x1="72.0" y1="636.0" x2="936.0" y2="636.0"/>
+<text class="ink" x="16" y="690" font-weight="600">Peak memory of the container</text>
+<line class="grid" x1="72.0" y1="836.0" x2="936.0" y2="836.0"/><text class="muted" x="66.0" y="840.0" text-anchor="end">0 MB</text>
+<line class="grid" x1="72.0" y1="799.3" x2="936.0" y2="799.3"/><text class="muted" x="66.0" y="803.3" text-anchor="end">100 MB</text>
+<line class="grid" x1="72.0" y1="762.7" x2="936.0" y2="762.7"/><text class="muted" x="66.0" y="766.7" text-anchor="end">200 MB</text>
+<line class="grid" x1="72.0" y1="726.0" x2="936.0" y2="726.0"/><text class="muted" x="66.0" y="730.0" text-anchor="end">300 MB</text>
+<text class="ink2" x="158.4" y="853.0" text-anchor="middle">GOGC=100 (default)</text>
+<path class="s1" d="M144.4 836.0 V828.2 Q144.4 824.2 148.4 824.2 H168.4 Q172.4 824.2 172.4 828.2 V836.0 Z"><title>tls-proxy-lb, GOGC=100 (default): 32.08</title></path>
+<text class="ink2" x="158.4" y="820.2" text-anchor="middle" font-size="10">32.08</text>
+<text class="ink2" x="331.2" y="853.0" text-anchor="middle">GOGC=50</text>
+<path class="s1" d="M317.2 836.0 V829.6 Q317.2 825.6 321.2 825.6 H341.2 Q345.2 825.6 345.2 829.6 V836.0 Z"><title>tls-proxy-lb, GOGC=50: 28.35</title></path>
+<text class="ink2" x="331.2" y="821.6" text-anchor="middle" font-size="10">28.35</text>
+<text class="ink2" x="504.0" y="853.0" text-anchor="middle">GOGC=200</text>
+<path class="s1" d="M490.0 836.0 V825.2 Q490.0 821.2 494.0 821.2 H514.0 Q518.0 821.2 518.0 825.2 V836.0 Z"><title>tls-proxy-lb, GOGC=200: 40.34</title></path>
+<text class="ink2" x="504.0" y="817.2" text-anchor="middle" font-size="10">40.34</text>
+<text class="ink2" x="676.8" y="853.0" text-anchor="middle">GOGC=400</text>
+<path class="s1" d="M662.8 836.0 V819.2 Q662.8 815.2 666.8 815.2 H686.8 Q690.8 815.2 690.8 819.2 V836.0 Z"><title>tls-proxy-lb, GOGC=400: 56.64</title></path>
+<text class="ink2" x="676.8" y="811.2" text-anchor="middle" font-size="10">56.64</text>
+<text class="ink2" x="849.6" y="853.0" text-anchor="middle">GOGC=off,</text>
+<text class="ink2" x="849.6" y="867.0" text-anchor="middle">GOMEMLIMIT=256MiB</text>
+<path class="s1" d="M835.6 836.0 V749.0 Q835.6 745.0 839.6 745.0 H859.6 Q863.6 745.0 863.6 749.0 V836.0 Z"><title>tls-proxy-lb, GOGC=off, GOMEMLIMIT=256MiB: 248</title></path>
+<text class="ink2" x="849.6" y="741.0" text-anchor="middle" font-size="10">248</text>
+<line class="axis" x1="72.0" y1="836.0" x2="936.0" y2="836.0"/>
+</svg>

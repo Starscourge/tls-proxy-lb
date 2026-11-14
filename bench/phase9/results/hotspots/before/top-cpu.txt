@@ -1,0 +1,39 @@
+File: proxy
+Build ID: fcc73652dad049b61059107e41101a143461cbad
+Type: cpu
+Time: 2026-11-14 16:25:23 UTC
+Duration: 30s, Total samples = 107.02s (356.69%)
+Showing nodes accounting for 69.17s, 64.63% of 107.02s total
+Dropped 760 nodes (cum <= 0.54s)
+Showing top 30 nodes out of 192
+      flat  flat%   sum%        cum   cum%
+    55.44s 51.80% 51.80%     55.44s 51.80%  internal/runtime/syscall/linux.Syscall6
+     1.40s  1.31% 53.11%      1.42s  1.33%  log/slog.Value.Kind (inline)
+     1.22s  1.14% 54.25%      1.22s  1.14%  runtime.memmove
+     1.04s  0.97% 55.22%      1.04s  0.97%  time.runtimeNow
+     0.91s  0.85% 56.07%      0.91s  0.85%  runtime.nanotime (inline)
+     0.67s  0.63% 56.70%      0.72s  0.67%  log/slog.appendEscapedJSONString
+     0.66s  0.62% 57.32%      0.66s  0.62%  internal/runtime/maps.memHashAES
+     0.63s  0.59% 57.91%     90.30s 84.38%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).forward
+     0.60s  0.56% 58.47%      0.60s  0.56%  crypto/internal/fips140/aes/gcm.gcmAesEnc
+     0.44s  0.41% 58.88%      2.87s  2.68%  net/http.Header.writeSubset
+     0.41s  0.38% 59.26%      1.42s  1.33%  runtime.mapaccess2_faststr
+     0.41s  0.38% 59.64%      0.77s  0.72%  sync.(*Pool).Get
+     0.39s  0.36% 60.01%      1.03s  0.96%  runtime.pcvalue
+     0.39s  0.36% 60.37%      0.68s  0.64%  runtime.tryDeferToSpanScan
+     0.39s  0.36% 60.74%      0.56s  0.52%  slices.insertionSortCmpFunc[go.shape.struct { net/http.key string; net/http.values []string }] (inline)
+     0.33s  0.31% 61.04%      4.98s  4.65%  net/textproto.readMIMEHeader
+     0.30s  0.28% 61.32%      1.99s  1.86%  internal/poll.runtime_pollSetDeadline
+     0.30s  0.28% 61.61%     32.30s 30.18%  io.copyBuffer
+     0.29s  0.27% 61.88%      0.59s  0.55%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+     0.29s  0.27% 62.15%      1.36s  1.27%  log/slog.(*Record).AddAttrs
+     0.28s  0.26% 62.41%      1.15s  1.07%  fmt.(*pp).doPrintf
+     0.28s  0.26% 62.67%      0.90s  0.84%  runtime.(*timer).modify
+     0.28s  0.26% 62.93%      5.29s  4.94%  runtime.mallocgc
+     0.28s  0.26% 63.19%      0.64s   0.6%  runtime.netpollblock
+     0.27s  0.25% 63.45%      0.60s  0.56%  crypto/internal/fips140/aes/gcm.(*GCMWithXORCounterNonce).Open
+     0.26s  0.24% 63.69%      1.11s  1.04%  crypto/internal/fips140/aes/gcm.(*GCMWithXORCounterNonce).Seal
+     0.26s  0.24% 63.93%      1.16s  1.08%  net/textproto.canonicalMIMEHeaderKey
+     0.25s  0.23% 64.17%      6.31s  5.90%  bufio.(*Reader).Peek
+     0.25s  0.23% 64.40%     10.43s  9.75%  bufio.(*Reader).fill
+     0.25s  0.23% 64.63%      7.87s  7.35%  internal/poll.(*FD).Read

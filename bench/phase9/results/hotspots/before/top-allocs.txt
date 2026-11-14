@@ -1,0 +1,39 @@
+File: proxy
+Build ID: fcc73652dad049b61059107e41101a143461cbad
+Type: alloc_space
+Time: 2026-11-14 16:25:53 UTC
+Duration: 30s, Total samples = 5.62GB 
+Showing nodes accounting for 5.52GB, 98.31% of 5.62GB total
+Dropped 102 nodes (cum <= 0.03GB)
+Showing top 30 nodes out of 44
+      flat  flat%   sum%        cum   cum%
+    1.60GB 28.54% 28.54%     2.28GB 40.68%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).logAccess
+    1.54GB 27.46% 56.00%     1.54GB 27.46%  net/textproto.readMIMEHeader
+    0.63GB 11.13% 67.13%     0.63GB 11.13%  slices.Grow[go.shape.[]log/slog.Attr,go.shape.struct { Key string; Value log/slog.Value }] (inline)
+    0.46GB  8.23% 75.37%     0.46GB  8.23%  net/http.newTransferWriter
+    0.44GB  7.89% 83.25%     1.26GB 22.47%  net/http.readRequestLimit
+    0.21GB  3.78% 87.03%     1.32GB 23.42%  net/http.ReadResponse
+    0.20GB  3.58% 90.62%     0.20GB  3.58%  net/url.parse
+    0.11GB  1.97% 92.59%     0.14GB  2.48%  net/http.readTransfer
+    0.10GB  1.77% 94.36%     0.10GB  1.77%  io.LimitReader (inline)
+    0.06GB  1.10% 95.47%     0.35GB  6.14%  net/http.(*Request).write
+    0.05GB  0.81% 96.28%     0.05GB  0.83%  log/slog.appendJSONValue
+    0.04GB  0.69% 96.96%     0.04GB  0.69%  net/textproto.(*Reader).ReadLine (inline)
+    0.04GB  0.68% 97.64%     0.04GB  0.68%  github.com/Starscourge/tls-proxy-lb/internal/httpx.SetForwarded
+    0.02GB  0.36% 98.00%     0.06GB  1.03%  github.com/Starscourge/tls-proxy-lb/internal/httpx.PrepareRequest
+    0.02GB  0.31% 98.31%     0.32GB  5.78%  net/http.(*Response).Write
+         0     0% 98.31%     5.61GB 99.91%  github.com/Starscourge/tls-proxy-lb/internal/app.(*handlerSlot).ServeConn
+         0     0% 98.31%     5.61GB 99.91%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0% 98.31%     5.61GB 99.91%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+         0     0% 98.31%     0.35GB  6.14%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*bodyWriter).start
+         0     0% 98.31%     1.66GB 29.57%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).exchange
+         0     0% 98.31%     4.29GB 76.35%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).forward
+         0     0% 98.31%     4.35GB 77.38%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+         0     0% 98.31%     1.32GB 23.42%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).readResponse (inline)
+         0     0% 98.31%     5.61GB 99.85%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+         0     0% 98.31%     0.35GB  6.14%  github.com/Starscourge/tls-proxy-lb/internal/conn.writeRequest
+         0     0% 98.31%     1.26GB 22.47%  github.com/Starscourge/tls-proxy-lb/internal/httpx.ReadRequest
+         0     0% 98.31%     1.32GB 23.42%  github.com/Starscourge/tls-proxy-lb/internal/httpx.ReadResponse
+         0     0% 98.31%     0.06GB  1.01%  log/slog.(*JSONHandler).Handle
+         0     0% 98.31%     0.68GB 12.14%  log/slog.(*Logger).LogAttrs (inline)
+         0     0% 98.31%     0.68GB 12.14%  log/slog.(*Logger).logAttrs

@@ -1,0 +1,39 @@
+File: proxy
+Build ID: fcc73652dad049b61059107e41101a143461cbad
+Type: delay
+Time: 2026-11-14 16:25:53 UTC
+Duration: 30s, Total samples = 9.32s (31.06%)
+Showing nodes accounting for 9.32s, 100% of 9.32s total
+Dropped 197 nodes (cum <= 0.05s)
+Showing top 30 nodes out of 40
+      flat  flat%   sum%        cum   cum%
+     9.10s 97.66% 97.66%      9.10s 97.66%  sync.(*Mutex).Unlock (partial-inline)
+     0.22s  2.33%   100%      0.22s  2.33%  runtime.unlock (partial-inline)
+         0     0%   100%      0.08s  0.81%  encoding/json.(*Encoder).Encode
+         0     0%   100%      0.08s  0.81%  encoding/json/v2.MarshalEncode
+         0     0%   100%      0.08s  0.81%  encoding/json/v2.marshalEncode
+         0     0%   100%      9.27s 99.52%  github.com/Starscourge/tls-proxy-lb/internal/app.(*handlerSlot).ServeConn
+         0     0%   100%      9.27s 99.52%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Proxy).ServeConn
+         0     0%   100%      9.10s 97.66%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).Serve.gowrap2
+         0     0%   100%      9.27s 99.52%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*Server).serveConn
+         0     0%   100%      9.25s 99.25%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).forward
+         0     0%   100%      4.45s 47.72%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).logAccess
+         0     0%   100%      9.25s 99.25%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).proxy
+         0     0%   100%      9.27s 99.52%  github.com/Starscourge/tls-proxy-lb/internal/conn.(*clientConn).serveRequest
+         0     0%   100%      0.99s 10.65%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).Get
+         0     0%   100%      3.78s 40.52%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).Put
+         0     0%   100%      0.99s 10.63%  github.com/Starscourge/tls-proxy-lb/internal/upstream.(*Pool).pop
+         0     0%   100%      4.41s 47.32%  log/slog.(*JSONHandler).Handle
+         0     0%   100%      4.41s 47.33%  log/slog.(*Logger).LogAttrs (inline)
+         0     0%   100%      4.41s 47.33%  log/slog.(*Logger).logAttrs
+         0     0%   100%      4.41s 47.32%  log/slog.(*commonHandler).handle
+         0     0%   100%      0.08s  0.81%  log/slog.(*handleState).appendAttr
+         0     0%   100%      0.08s  0.81%  log/slog.(*handleState).appendNonBuiltIns
+         0     0%   100%      0.08s  0.81%  log/slog.(*handleState).appendNonBuiltIns.func1 (inline)
+         0     0%   100%      0.08s  0.81%  log/slog.(*handleState).appendValue
+         0     0%   100%      0.08s  0.81%  log/slog.Record.Attrs (inline)
+         0     0%   100%      0.08s  0.81%  log/slog.appendJSONMarshal
+         0     0%   100%      0.08s  0.81%  log/slog.appendJSONValue
+         0     0%   100%      0.08s  0.81%  reflect.(*rtype).ptrTo
+         0     0%   100%      0.08s  0.81%  reflect.New
+         0     0%   100%      0.08s  0.81%  reflect.ptrTo (inline)

@@ -21,11 +21,15 @@
 #
 # During each attack loadgen2 sends 100 normal requests per second (k6,
 # constant arrival rate), and the script samples the proxy's
-# proxy_client_connections, go_goroutines and process_resident_memory_bytes
-# every second. Passes when, in every mode: no normal request fails, their
+# proxy_client_connections, go_goroutines, go_memstats_heap_inuse_bytes and
+# process_resident_memory_bytes every second. Passes when, in every mode: no normal request fails, their
 # p99 is within twice the baseline p99 plus 5 ms, goroutines stay under
 # 3 per open connection plus 200, resident memory under 1 GiB, and 20 s
 # after the attack goroutines are back within 50 of the baseline.
+#
+# Without --no-up the lab is rebuilt and the proxy (with Prometheus, which
+# shares its network namespace) recreated, so the baseline is a fresh
+# process; with it, resident memory starts at whatever an earlier run left.
 #
 # Usage: bench/phase8/slowhttptest.sh [--no-up]
 # Writes bench/phase8/results/slowhttptest.txt; exits non-zero on failure.
@@ -56,6 +60,7 @@ if [[ "${1:-}" != "--no-up" ]]; then
   [[ -s "$root/lab/certs/default.test.crt" ]] || "$root/lab/gen-certs.sh" "$root/lab/certs"
   echo "== docker compose up"
   "${compose[@]}" up -d --build --wait >/dev/null
+  "${compose[@]}" up -d --wait --force-recreate proxy prometheus >/dev/null
 fi
 echo "== building $image"
 docker build -q -f "$root/lab/Dockerfile" --target slowhttptest -t "$image" "$root" >/dev/null
@@ -66,7 +71,8 @@ metrics() {
     awk '$1 == "proxy_client_connections" { c = $2 }
          $1 == "go_goroutines" { g = $2 }
          $1 == "process_resident_memory_bytes" { r = $2 }
-         END { printf "%d %d %d\n", c, g, r }'
+         $1 == "go_memstats_heap_inuse_bytes" { h = $2 }
+         END { printf "%d %d %d %d\n", c, g, r, h }'
 }
 
 # normal DURATION NAME: k6 from loadgen2 at normal_rate/s, summary to
@@ -91,7 +97,7 @@ PY
 }
 
 echo "== baseline: $normal_rate/s normal requests for 30 s"
-read -r base_c base_g base_rss < <(metrics)
+read -r base_c base_g base_rss base_heap < <(metrics)
 normal 30s baseline
 read -r base_p50 base_p99 base_failed base_total < <(k6stats baseline)
 echo "p50 $base_p50 ms, p99 $base_p99 ms, failed $base_failed of $base_total; goroutines $base_g, rss $((base_rss >> 20)) MiB"
@@ -134,11 +140,15 @@ for mode in headers body read; do
   kill "$sampler" 2>/dev/null || true
   wait "$sampler" 2>/dev/null || true
   sampler=""
-  read -r _ g_after _ < <(metrics)
+  read -r _ g_after _ _ < <(metrics)
 
   read -r p50 p99 failed total < <(k6stats "$mode")
-  read -r peak_c peak_g peak_rss < <(awk '{ if ($2 > c) c = $2; if ($3 > g) g = $3; if ($4 > r) r = $4 }
-    END { printf "%d %d %d\n", c, g, r }' "$tmp/$mode.samples")
+  # Maxima over the attack, and the connections open 30 s in: by then a
+  # defence that works has closed the slow headers and slow bodies.
+  read -r peak_c peak_g peak_rss peak_heap at30 < <(awk 'NR == 1 { t0 = $1 }
+    { if ($2 > c) c = $2; if ($3 > g) g = $3; if ($4 > r) r = $4; if ($5 > h) h = $5
+      if (!seen && $1 - t0 >= 30) { at30 = $2; seen = 1 } }
+    END { printf "%d %d %d %d %d\n", c, g, r, h, at30 }' "$tmp/$mode.samples")
   p99_limit=$(awk -v b="$base_p99" 'BEGIN { printf "%.2f", 2 * b + 5 }')
   g_limit=$((3 * peak_c + 200))
   [[ $failed -eq 0 ]] || fail+=("$mode: $failed of $total normal requests failed")
@@ -146,7 +156,7 @@ for mode in headers body read; do
   ((peak_g <= g_limit)) || fail+=("$mode: $peak_g goroutines for $peak_c connections")
   ((peak_rss <= 1 << 30)) || fail+=("$mode: resident memory $((peak_rss >> 20)) MiB")
   ((g_after <= base_g + 50)) || fail+=("$mode: $g_after goroutines 20 s after, baseline $base_g")
-  report+=("$(printf '%-8s %8s %8s %8s/%-6s %10s %10s %10s %10s' "$mode" "$p50" "$p99" "$failed" "$total" "$peak_c" "$peak_g" "$((peak_rss >> 20))" "$g_after")")
+  report+=("$(printf '%-8s %7s %7s %7s/%-5s %10s %8s %9s %8s %8s %9s' "$mode" "$p50" "$p99" "$failed" "$total" "$peak_c" "$at30" "$peak_g" "$((peak_heap >> 20))" "$((peak_rss >> 20))" "$g_after")")
   echo "${report[-1]}"
 done
 
@@ -161,13 +171,17 @@ done
   echo "normal:   k6 from loadgen2, $normal_rate/s constant arrival rate, GET $target/"
   echo
   echo "baseline: p50 $base_p50 ms, p99 $base_p99 ms, $base_failed failed of $base_total;"
-  echo "          $base_g goroutines, $((base_rss >> 20)) MiB resident"
+  echo "          $base_g goroutines, $((base_heap >> 20)) MiB heap in use, $((base_rss >> 20)) MiB resident"
   echo
-  printf '%-8s %8s %8s %15s %10s %10s %10s %10s\n' attack p50_ms p99_ms failed/total peak_conns peak_gor rss_mib gor_after
+  printf '%-8s %7s %7s %13s %10s %8s %9s %8s %8s %9s\n' attack p50_ms p99_ms failed/total peak_conns conns@30s peak_gor heap_mib rss_mib gor_after
   printf '%s\n' "${report[@]}"
   echo
-  echo "peak_conns, peak_gor, rss_mib: maxima of proxy_client_connections, go_goroutines and"
-  echo "process_resident_memory_bytes sampled each second; gor_after: goroutines 20 s after."
+  echo "peak_conns, peak_gor, heap_mib, rss_mib: maxima of proxy_client_connections,"
+  echo "go_goroutines, go_memstats_heap_inuse_bytes and process_resident_memory_bytes, sampled"
+  echo "each second; conns@30s: open connections 30 s into the attack; gor_after: goroutines"
+  echo "20 s after. Resident memory includes heap the Go runtime has not returned to the OS yet."
+  echo "slowhttptest's own \"connected\" count below is its view: over TLS it does not notice the"
+  echo "proxy closing a connection until it next writes, so conns@30s is the proxy's view."
   echo "Limits: no normal request failed, p99 <= 2 x baseline + 5 ms, goroutines <= 3 per"
   echo "connection + 200, resident memory <= 1 GiB, goroutines after <= baseline + 50."
   for mode in headers body read; do

@@ -157,6 +157,9 @@ func main() {
 	}
 	out, closeLog := logOutput(os.Stdout, cfg.Log)
 	logger := slog.New(slog.NewJSONHandler(out, nil))
+	if msg := rootWarning(os.Geteuid()); msg != "" {
+		logger.Warn(msg)
+	}
 	// Buffered, so a signal that arrives while a reload runs is not lost.
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
@@ -172,6 +175,17 @@ func main() {
 	if err != nil {
 		os.Exit(exitFailed)
 	}
+}
+
+// rootWarning returns a warning to log if the proxy runs with uid 0, or "".
+// It needs no privileges: run it as its own user, and grant
+// CAP_NET_BIND_SERVICE alone if it must bind a port below 1024
+// (README.md, "Privileges").
+func rootWarning(euid int) string {
+	if euid != 0 {
+		return ""
+	}
+	return "running as root; the proxy needs no privileges: run it as its own user, with CAP_NET_BIND_SERVICE if it binds a port below 1024"
 }
 
 // logOutput returns where log lines go: w through a logbuf.Writer, or w

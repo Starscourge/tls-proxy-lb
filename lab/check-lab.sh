@@ -69,6 +69,18 @@ done
 [[ "$got" == "$want" ]] || { echo "FAIL: GOMAXPROCS '$got', want $want (cpu.max $quota $period)" >&2; exit 1; }
 echo "ok: cpu.max $quota $period -> GOMAXPROCS $got"
 
+echo "== the proxy runs without privileges"
+uid="$("${compose[@]}" exec -T proxy id -u)"
+[[ "$uid" != 0 ]] || { echo "FAIL: the proxy runs as root" >&2; exit 1; }
+capeff="$("${compose[@]}" exec -T proxy sh -c 'grep CapEff /proc/1/status' | awk '{print $2}')"
+[[ "$capeff" =~ ^0+$ ]] || { echo "FAIL: the proxy has capabilities: CapEff $capeff" >&2; exit 1; }
+nnp="$("${compose[@]}" exec -T proxy sh -c 'grep NoNewPrivs /proc/1/status' | awk '{print $2}')"
+[[ "$nnp" == 1 ]] || { echo "FAIL: NoNewPrivs is '$nnp', want 1" >&2; exit 1; }
+if "${compose[@]}" exec -T proxy sh -c 'touch /probe' 2>/dev/null; then
+  echo "FAIL: the proxy's root filesystem is writable" >&2; exit 1
+fi
+echo "ok: uid $uid, CapEff $capeff, NoNewPrivs 1, read-only root filesystem"
+
 echo "== proxy routes from loadgen"
 # Default pool, round-robin, with the default certificate. The container
 # healthcheck also uses this pool, so six requests are checked to cover all

@@ -526,3 +526,12 @@ func TestLogOutput(t *testing.T) {
 		t.Fatalf("unbuffered: %q", buf.String())
 	}
 }
+
+func TestRootWarning(t *testing.T) {
+	if rootWarning(10001) != "" {
+		t.Fatal("warning for a non-root user")
+	}
+	if !strings.Contains(rootWarning(0), "CAP_NET_BIND_SERVICE") {
+		t.Fatal("no warning for root")
+	}
+}

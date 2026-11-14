@@ -137,6 +137,25 @@ flight finish with `Connection: close`, for up to `shutdown_ms` (8 s by
 default, inside `docker stop`'s 10 s). Whatever is still open then is
 closed. The exit code is 0 either way.
 
+### Privileges
+
+The proxy needs none. The Docker image runs it as uid 10001, and the lab
+also drops every capability, sets `no-new-privileges` and mounts the root
+filesystem read-only (`lab/check-lab.sh` checks all of it). To bind 443
+on a host without Docker, grant only the one capability, for example in
+a systemd unit:
+
+```ini
+[Service]
+User=proxy
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+```
+
+Docker lets an unprivileged container user bind any port, so the image
+needs no capability at all. Started as root, the proxy logs a warning.
+
 ### Config file
 
 ```toml

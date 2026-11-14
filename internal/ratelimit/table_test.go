@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"runtime"
@@ -380,4 +381,18 @@ func ExampleLimiter_Allow() {
 	// true
 	// true
 	// false
+}
+
+// The sweeper also stops when the table's context ends.
+func TestTableContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tab := NewContext(ctx, Options{SweepInterval: time.Hour})
+	cancel()
+	select {
+	case <-tab.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sweeper still running after its context ended")
+	}
+	tab.Close()
+	tab.Close()
 }

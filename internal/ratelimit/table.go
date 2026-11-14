@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"hash/maphash"
 	"math"
 	"net/netip"
@@ -75,7 +76,7 @@ type shard struct {
 // compare-and-swap.
 //
 // Goroutine ownership: New starts at most one sweeper goroutine, which Close
-// stops and waits for.
+// stops and waits for; NewContext's also stops when its context ends.
 type Table struct {
 	clock    Clock
 	epoch    time.Time
@@ -89,13 +90,17 @@ type Table struct {
 	mu     sync.Mutex
 	routes map[string]uint32
 
-	stop      chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
+	ctx  context.Context
+	stop context.CancelFunc
+	done chan struct{}
 }
 
 // New returns an empty table and starts its sweeper, if o asks for one.
-func New(o Options) *Table {
+func New(o Options) *Table { return NewContext(context.Background(), o) }
+
+// NewContext is New with a sweeper that also stops when ctx ends. Close
+// must still be called, to wait for it.
+func NewContext(ctx context.Context, o Options) *Table {
 	if o.Clock == nil {
 		o.Clock = SystemClock{}
 	}
@@ -108,9 +113,9 @@ func New(o Options) *Table {
 		seed:     maphash.MakeSeed(),
 		perShard: max(o.MaxEntries/NumShards, 1),
 		routes:   make(map[string]uint32),
-		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+	t.ctx, t.stop = context.WithCancel(ctx)
 	for i := range t.shards {
 		t.shards[i].m = make(map[key]*bucket)
 	}
@@ -124,7 +129,7 @@ func New(o Options) *Table {
 
 // Close stops the sweeper and waits for it. The table stays usable.
 func (t *Table) Close() {
-	t.closeOnce.Do(func() { close(t.stop) })
+	t.stop()
 	<-t.done
 }
 
@@ -136,7 +141,7 @@ func (t *Table) sweeper(every time.Duration) {
 		select {
 		case <-tick.C:
 			t.Sweep()
-		case <-t.stop:
+		case <-t.ctx.Done():
 			return
 		}
 	}

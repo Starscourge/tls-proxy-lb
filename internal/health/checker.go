@@ -78,12 +78,16 @@ type Checker struct {
 
 // NewChecker returns a checker with no targets. Close must be called to
 // stop the probers that Target and Sync start.
-func NewChecker(cfg Config) *Checker {
+func NewChecker(cfg Config) *Checker { return NewCheckerContext(context.Background(), cfg) }
+
+// NewCheckerContext is NewChecker with probers that also stop when ctx
+// ends. Close must still be called, to wait for them.
+func NewCheckerContext(parent context.Context, cfg Config) *Checker {
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	return &Checker{
 		opts:    cfg.Options,
 		log:     log,

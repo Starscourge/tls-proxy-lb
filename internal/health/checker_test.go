@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -376,4 +377,25 @@ func TestStateString(t *testing.T) {
 			t.Errorf("%d: %q", s, s.String())
 		}
 	}
+}
+
+// Probers also stop when the checker's parent context ends; Close
+// afterwards returns at once.
+func TestCheckerContext(t *testing.T) {
+	a := newBackend(t)
+	o := fastOptions()
+	o.Interval, o.Eject = time.Hour, time.Hour
+	base := goleak.IgnoreCurrent()
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewCheckerContext(ctx, Config{Options: o})
+	tg := c.Target(a.addr())
+	waitChecks(t, a, 1)
+	cancel()
+	select {
+	case <-tg.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prober still running after the context ended")
+	}
+	c.Close()
+	goleak.VerifyNone(t, base)
 }

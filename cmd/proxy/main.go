@@ -35,6 +35,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/logbuf"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -161,8 +162,13 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	})
 	defer chk.Close()
 	srv := conn.NewServer(conn.Limits{MaxConns: cfg.Limits.MaxConns, MaxPerIP: cfg.Limits.MaxConnsPerIP, Exempt: cfg.TrustedProxies}, logger)
-	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len})
-	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m})
+	// One table for the life of the process, so a reloaded snapshot
+	// (Phase 7) keeps every client's bucket. Its sweeper stops on return.
+	tab := ratelimit.New(ratelimit.Options{MaxEntries: cfg.RateLimit.MaxEntries, SweepInterval: cfg.RateLimit.Sweep})
+	defer tab.Close()
+	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len,
+		ClientConnsRejected: srv.Tracker().RejectedByName, RateLimit: tab})
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m, RateLimit: tab})
 	if err != nil {
 		return err
 	}
@@ -215,7 +221,9 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, ready cha
 	logger.Info("proxy listening", "version", version, "addrs", addrs, "modes", modes,
 		"log_buffer_bytes", cfg.Log.BufferBytes,
 		"routes", len(cfg.Routes), "pools", len(cfg.Pools), "default_pool", cfg.DefaultPool,
-		"max_conns", snap.Limits.MaxConns,
+		"max_conns", snap.Limits.MaxConns, "max_conns_per_ip", snap.Limits.MaxConnsPerIP,
+		"rate_limit", snap.RateLimit.Default.Rate, "rate_burst", snap.RateLimit.Default.Burst,
+		"rate_limit_max_entries", tab.MaxEntries(), "trusted_proxies", len(snap.TrustedProxies),
 		"max_idle_per_backend", snap.Upstream.MaxIdlePerBackend, "upstream_idle_ms", snap.Upstream.IdleTimeout.Milliseconds(),
 		"max_retries", snap.Upstream.MaxRetries,
 		"health_interval_ms", snap.Health.Interval.Milliseconds(), "health_rise", snap.Health.Rise, "health_fall", snap.Health.Fall,

@@ -24,6 +24,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/conn"
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
@@ -57,6 +58,7 @@ type ProxyOptions struct {
 	Timeouts       config.Timeouts
 	MaxConns       int
 	MaxHeaderBytes int
+	MaxConnsPerIP  int
 	// MaxIdlePerBackend and UpstreamIdle go to the [upstream] table;
 	// NoReuse writes max_idle_per_backend = 0, turning reuse off.
 	MaxIdlePerBackend int
@@ -80,9 +82,11 @@ type Proxy struct {
 	*conn.Server
 	// Snapshot is the config the proxy serves, for reaching its pools.
 	Snapshot *config.Snapshot
-	// Health and Metrics are the proxy's health checker and metrics.
-	Health  *health.Checker
-	Metrics *metrics.Metrics
+	// Health, Metrics and RateLimit are the proxy's health checker,
+	// metrics and rate-limit table.
+	Health    *health.Checker
+	Metrics   *metrics.Metrics
+	RateLimit *ratelimit.Table
 	// AdminURL is http://host:port of the admin listener, if
 	// ProxyOptions.Admin was set.
 	AdminURL string
@@ -166,6 +170,9 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	if opts.MaxHeaderBytes != 0 {
 		fmt.Fprintf(&src, "max_header_bytes = %d\n", opts.MaxHeaderBytes)
 	}
+	if opts.MaxConnsPerIP != 0 {
+		fmt.Fprintf(&src, "max_conns_per_ip = %d\n", opts.MaxConnsPerIP)
+	}
 
 	src.WriteString("\n[upstream]\n")
 	switch {
@@ -211,8 +218,11 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	})
 	t.Cleanup(chk.Close)
 	srv := conn.NewServer(conn.Limits{MaxConns: cfg.Limits.MaxConns, MaxPerIP: cfg.Limits.MaxConnsPerIP, Exempt: cfg.TrustedProxies}, logger)
-	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len})
-	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m})
+	tab := ratelimit.New(ratelimit.Options{MaxEntries: cfg.RateLimit.MaxEntries, SweepInterval: cfg.RateLimit.Sweep})
+	t.Cleanup(tab.Close)
+	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len,
+		ClientConnsRejected: srv.Tracker().RejectedByName, RateLimit: tab})
+	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m, RateLimit: tab})
 	if err != nil {
 		t.Fatalf("proxy snapshot: %v", err)
 	}
@@ -238,7 +248,7 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 	})
 	addr := ln.Addr().String()
 	px := &Proxy{
-		Server: srv, Snapshot: snap, Health: chk, Metrics: m,
+		Server: srv, Snapshot: snap, Health: chk, Metrics: m, RateLimit: tab,
 		ConfigPath: path, Dir: dir, Scheme: opts.Scheme, CA: ca, Addr: addr,
 		URL: opts.Scheme + "://a.test:" + port(addr),
 	}
@@ -315,9 +325,21 @@ func (p *Proxy) URLFor(host string) string {
 // ends.
 func (p *Proxy) Client(t testing.TB) *http.Client {
 	t.Helper()
+	return p.ClientFrom(t, "")
+}
+
+// ClientFrom is Client with connections made from the local address
+// from, such as "127.0.0.2", so the proxy sees another client IP. Any
+// address in 127.0.0.0/8 works on Linux. Empty lets the kernel choose.
+func (p *Proxy) ClientFrom(t testing.TB, from string) *http.Client {
+	t.Helper()
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	if from != "" {
+		d.LocalAddr = &net.TCPAddr{IP: net.ParseIP(from)}
+	}
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, p.Addr)
+			return d.DialContext(ctx, network, p.Addr)
 		},
 		ResponseHeaderTimeout: 30 * time.Second,
 		MaxIdleConnsPerHost:   64,

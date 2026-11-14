@@ -8,7 +8,7 @@ it uses only the parsers and serialisers (`ReadRequest`, `ReadResponse`,
 `Request.Write`, `Response.Write`, `Header`). `http.Server`, `http.Transport`,
 `http.Client` and `httputil.ReverseProxy` are not used on the request path.
 
-**Status:** Phase 7 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
+**Status:** Phase 8 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
 certificate and the pool on one port; round-robin, least-connections or
 consistent hashing across each pool, from a TOML config file; upstream
 connections kept alive and reused through the proxy's own pool; active and
@@ -17,8 +17,11 @@ retries on another backend; per-client token-bucket rate limits per route
 with 429 and `Retry-After`, and a per-IP connection cap; Prometheus
 `/metrics`, a JSON `/status` and pprof on a loopback admin listener;
 `SIGHUP` reloads the config, certificates included, without failing a
-request, and `SIGTERM` drains open requests before exiting). Hardening
-and fuzzing arrive in Phase 8.
+request, and `SIGTERM` drains open requests before exiting; requests with
+ambiguous framing refused, slow clients cut off, limits on headers,
+bodies and requests per connection, panics contained to one connection,
+three fuzz targets, and a threat model in `docs/THREAT_MODEL.md`).
+Benchmarks against nginx and failure demos arrive in Phase 9.
 
 ## Layout
 
@@ -31,7 +34,8 @@ internal/          proxy packages (app, conn, httpx, tlsx, lb, upstream,
 test/integration/  end-to-end tests and their helpers
 bench/             benchmark and demo scripts, raw results
 lab/               Docker Compose lab, certificate script
-docs/              design decisions, testssl.sh report
+docs/              design decisions, threat model, smuggling and fuzzing
+                   notes, testssl.sh reports
 ```
 
 ## Requirements
@@ -48,7 +52,7 @@ make lint               # gofmt, go vet, staticcheck
 make certs              # local CA and certificates for a.test, b.test, default.test in lab/certs
 make check-config       # validate lab/proxy.toml (or CONFIG=path), like nginx -t
 make bench-lb           # balancer benchmarks; fails if a pick allocates
-make testssl            # testssl.sh against the lab proxy; report in docs/testssl-phase3.txt
+make testssl            # testssl.sh against the lab proxy; report in docs/testssl-phase8.txt (REPORT=...)
 make lab-up             # proxy, three backends and a load generator in Docker
 make lab-check          # bring the lab up and check backends, proxy routes, Prometheus and netem
 make prom-check         # Prometheus in the lab scrapes the proxy's /metrics (lab must be up)
@@ -66,6 +70,8 @@ make bench-ratelimit-race # -race run and mutex profile with the rate-limit tabl
 make bench-reload       # SIGHUP every second, alternating pool membership, during 60 s of wrk (-race build)
 make bench-reload-control # the same wrk run without SIGHUP
 make stop-check         # docker stop drains and exits 0 inside the grace period (lab must be up)
+make fuzz               # each fuzz target for a CPU-hour; corpora into testdata/fuzz
+make bench-slowloris    # slowhttptest, 5,000 slow connections per attack, against the lab
 ```
 
 ## Running the proxy

@@ -9,7 +9,7 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
         check-config lab-up lab-down lab-check netem-check prom-check wrk-race bench-lb testssl \
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
         bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race \
-        bench-reload bench-reload-control stop-check clean
+        bench-reload bench-reload-control stop-check fuzz bench-slowloris clean
 
 all: build test lint
 
@@ -77,8 +77,9 @@ bench-lb:
 	bench/phase2/balancers.sh
 
 # Phase 3 "Done when": testssl.sh against the lab proxy, report in docs/.
+REPORT ?= docs/testssl-phase8.txt
 testssl:
-	bench/phase3/testssl.sh
+	bench/phase3/testssl.sh $(REPORT)
 
 # Phase 4 "Done when" items; results in bench/phase4/results/.
 bench-allocs:            # allocations per request (LABEL=after by default)
@@ -111,6 +112,12 @@ bench-reload-control:    # the same wrk run with no SIGHUP
 	RELOADS=off bench/phase7/reload-wrk.sh
 stop-check:              # docker stop drains and exits 0 inside the grace period (lab must be up)
 	lab/stop-check.sh --no-up
+
+# Phase 8 "Done when" items; results in bench/phase8/results/.
+fuzz:                    # each fuzz target for at least a CPU-hour; corpora into testdata/fuzz
+	bench/phase8/fuzz.sh
+bench-slowloris:         # slowhttptest: slow headers, body and read at 5,000 connections, in the lab
+	bench/phase8/slowhttptest.sh
 
 clean:
 	rm -rf $(BIN)

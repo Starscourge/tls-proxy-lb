@@ -70,10 +70,8 @@ func (f Figure) SVG() string {
 	if w == 0 {
 		w = 960
 	}
-	top := 40
-	if f.Subtitle != "" {
-		top += 18
-	}
+	sub := wrap(f.Subtitle, (w-32)*10/66) // about 6.6 px a character at 12 px
+	top := 40 + 18*len(sub)
 	h := top
 	for _, p := range f.Panels {
 		h += p.height()
@@ -84,8 +82,8 @@ func (f Figure) SVG() string {
 	fmt.Fprintf(&b, "<title>%s</title>\n<style>%s</style>\n", esc(f.Title), style)
 	fmt.Fprintf(&b, `<rect class="bg" x="0" y="0" width="%d" height="%d" rx="6"/>`+"\n", w, h)
 	fmt.Fprintf(&b, `<text class="ink" x="16" y="26" font-size="16" font-weight="600">%s</text>`+"\n", esc(f.Title))
-	if f.Subtitle != "" {
-		fmt.Fprintf(&b, `<text class="ink2" x="16" y="46">%s</text>`+"\n", esc(f.Subtitle))
+	for i, l := range sub {
+		fmt.Fprintf(&b, `<text class="ink2" x="16" y="%d">%s</text>`+"\n", 46+18*i, esc(l))
 	}
 	y := top
 	for _, p := range f.Panels {
@@ -97,6 +95,27 @@ func (f Figure) SVG() string {
 }
 
 func esc(s string) string { return html.EscapeString(s) }
+
+// wrap breaks s into lines of at most n characters at spaces (a longer
+// word gets a line of its own); "" is no lines.
+func wrap(s string, n int) []string {
+	var lines []string
+	line := ""
+	for _, w := range strings.Fields(s) {
+		if line != "" && len([]rune(line))+1+len([]rune(w)) > n {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line != "" {
+			line += " "
+		}
+		line += w
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
 
 // Point is one (x, y) sample. A NaN Y is a gap in the line.
 type Point struct{ X, Y float64 }
@@ -182,7 +201,7 @@ func (c LineChart) render(b *strings.Builder, x0, y0, w int) {
 	}
 	// Panel title and legend row, then marks' labels, then the plot.
 	px0, px1 := float64(x0+padL), float64(x0+w-padR)
-	py0, py1 := float64(y0+46), float64(y0+h-36)
+	py0, py1 := float64(y0+52), float64(y0+h-36)
 	fmt.Fprintf(b, `<text class="ink" x="%d" y="%d" font-weight="600">%s</text>`+"\n", x0+16, y0+14, esc(c.Title))
 	// Legend: the series when there are two or more, then the bands.
 	lx := float64(x0 + 16)
@@ -378,6 +397,10 @@ func (c LineChart) render(b *strings.Builder, x0, y0, w int) {
 
 // BarChart is grouped bars: one group per category, one bar per series in
 // each group, with a whisker from Lo to Hi when they differ from the value.
+// The axis covers the bars, and whiskers up to clipFactor times the
+// tallest bar; a longer whisker is cut at the top of the panel, ends in an
+// arrow, and is labelled with its maximum, so that one outlying run does
+// not flatten every bar in the panel.
 type BarChart struct {
 	Title       string
 	YLabel      string
@@ -396,6 +419,9 @@ type BarSeries struct {
 	Values []float64 // per category; NaN leaves the bar out
 	Lo, Hi []float64 // optional spread per category
 }
+
+// clipFactor: see BarChart.
+const clipFactor = 3
 
 func (c BarChart) height() int {
 	if c.Height == 0 {
@@ -417,14 +443,19 @@ func (c BarChart) render(b *strings.Builder, x0, y0, w int) {
 			lx += 17 + 7.2*float64(len([]rune(s.Name))) + 18
 		}
 	}
-	ymax := 0.0
+	vmax := 0.0
 	for _, s := range c.Series {
-		for i, v := range s.Values {
+		for _, v := range s.Values {
 			if !math.IsNaN(v) {
-				ymax = math.Max(ymax, v)
+				vmax = math.Max(vmax, v)
 			}
-			if i < len(s.Hi) && !math.IsNaN(s.Hi[i]) {
-				ymax = math.Max(ymax, s.Hi[i])
+		}
+	}
+	ymax := vmax
+	for _, s := range c.Series {
+		for _, h := range s.Hi {
+			if !math.IsNaN(h) && h <= vmax*clipFactor {
+				ymax = math.Max(ymax, h)
 			}
 		}
 	}
@@ -448,7 +479,10 @@ func (c BarChart) render(b *strings.Builder, x0, y0, w int) {
 	bw := math.Min(28, (gw*0.7)/ns)
 	for ci, cat := range c.Categories {
 		gx := px0 + gw*float64(ci) + gw/2
-		fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`+"\n", gx, py1+17, esc(cat))
+		// A label wider than its group (about 7 px a character) wraps.
+		for li, l := range wrap(cat, int(gw/7)) {
+			fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`+"\n", gx, py1+17+14*float64(li), esc(l))
+		}
 		for si, s := range c.Series {
 			if ci >= len(s.Values) || math.IsNaN(s.Values[ci]) {
 				continue
@@ -465,16 +499,39 @@ func (c BarChart) render(b *strings.Builder, x0, y0, w int) {
 				s.Class, bx, py1, top+r, bx, top, bx+r, top, bx+bw-r, bx+bw, top, bx+bw, top+r, py1,
 				esc(s.Name), esc(cat), num(v))
 			labelY := top - 4
+			clipped := false
 			if ci < len(s.Lo) && ci < len(s.Hi) && !math.IsNaN(s.Lo[ci]) && (s.Lo[ci] != v || s.Hi[ci] != v) {
 				cx := bx + bw/2
 				lo, hi := sy(s.Lo[ci]), sy(s.Hi[ci])
+				clipped = s.Hi[ci] > ymax
+				if clipped {
+					hi = py0
+				}
 				fmt.Fprintf(b, `<line class="whisker" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>`, cx, lo, cx, hi)
-				fmt.Fprintf(b, `<line class="whisker" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>`, cx-3, hi, cx+3, hi)
 				fmt.Fprintf(b, `<line class="whisker" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>`+"\n", cx-3, lo, cx+3, lo)
-				labelY = math.Min(labelY, hi-4)
+				if clipped {
+					// An arrow off the top, and the maximum above the
+					// panel's edge, outward from the group's middle.
+					fmt.Fprintf(b, `<path class="whisker" fill="none" d="M%.1f %.1f L%.1f %.1f L%.1f %.1f"/>`, cx-3.5, hi+5, cx, hi, cx+3.5, hi+5)
+					lx, anchor := cx+2, "start"
+					if float64(si) < (ns-1)/2 {
+						lx, anchor = cx-2, "end"
+					}
+					fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%.1f" text-anchor="%s" font-size="10">max %s%s</text>`+"\n",
+						lx, hi-5, anchor, esc(num(s.Hi[ci])), esc(c.YTickSuffix))
+				} else {
+					fmt.Fprintf(b, `<line class="whisker" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>`+"\n", cx-3, hi, cx+3, hi)
+					labelY = math.Min(labelY, hi-4)
+				}
 			}
 			if c.Label != nil {
 				if l := c.Label(si, ci, v); l != "" {
+					if clipped {
+						// The whisker runs through the label: give it a
+						// background (about 6 px a character at 10 px).
+						lw := 6*float64(len([]rune(l))) + 4
+						fmt.Fprintf(b, `<rect class="bg" x="%.1f" y="%.1f" width="%.1f" height="12" rx="2"/>`, bx+bw/2-lw/2, labelY-9.5, lw)
+					}
 					fmt.Fprintf(b, `<text class="ink2" x="%.1f" y="%.1f" text-anchor="middle" font-size="10">%s</text>`+"\n", bx+bw/2, labelY, esc(l))
 				}
 			}

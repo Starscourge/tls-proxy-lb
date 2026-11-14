@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -227,6 +228,53 @@ func TestBarChartSVG(t *testing.T) {
 	checkSVG(t, svg)
 	if strings.Count(svg, "<path class=\"s") != 3 {
 		t.Fatalf("want 3 bars (the NaN one left out):\n%s", svg)
+	}
+}
+
+// An outlying run's whisker is cut at the top of the panel and labelled,
+// rather than setting the axis; a whisker within clipFactor of the tallest
+// bar sets it as before.
+func TestBarChartClipsOutlier(t *testing.T) {
+	chart := func(hi float64) string {
+		var b strings.Builder
+		BarChart{
+			Categories: []string{"a", "b"},
+			Series: []BarSeries{
+				{Name: "x", Class: Slot(0), Values: []float64{5, 80}, Lo: []float64{4, 10}, Hi: []float64{9, hi}},
+				{Name: "y", Class: Slot(1), Values: []float64{4, 10}},
+			},
+			YTickSuffix: " ms",
+		}.render(&b, 0, 0, 960)
+		return b.String()
+	}
+	svg := chart(5220)
+	checkSVG(t, "<svg>"+svg+"</svg>")
+	if !strings.Contains(svg, ">max 5.22k ms<") {
+		t.Errorf("clipped whisker not labelled with its maximum:\n%s", svg)
+	}
+	if !strings.Contains(svg, ">100 ms<") || strings.Contains(svg, ">6k ms<") {
+		t.Errorf("axis should stop near the tallest bar (80), not the outlier:\n%s", svg)
+	}
+	svg = chart(200)
+	if strings.Contains(svg, ">max ") || !strings.Contains(svg, ">200 ms<") {
+		t.Errorf("a whisker within %vx the tallest bar should set the axis:\n%s", clipFactor, svg)
+	}
+}
+
+func TestWrap(t *testing.T) {
+	for _, tc := range []struct {
+		s    string
+		n    int
+		want []string
+	}{
+		{"", 10, nil},
+		{"short", 10, []string{"short"}},
+		{"one two three four", 9, []string{"one two", "three", "four"}},
+		{"a verylongword b", 4, []string{"a", "verylongword", "b"}},
+	} {
+		if got := wrap(tc.s, tc.n); !slices.Equal(got, tc.want) {
+			t.Errorf("wrap(%q, %d) = %q, want %q", tc.s, tc.n, got, tc.want)
+		}
 	}
 }
 

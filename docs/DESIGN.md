@@ -1222,3 +1222,250 @@ On the development machine (WSL2, Core Ultra 7 155H):
   flight per connection). p99 was 741 ms, from the requests that waited
   out the timeout. Back in rotation 534 ms after SIGCONT.
 - Allocations per request: unchanged (above).
+
+## Phase 6: Per-client rate limiting
+
+### One bucket per route and client
+
+PLAN.md sets `rate` and `burst` per route, so a bucket is keyed by (route,
+client address): a client's traffic to `a.test` and to `b.test` is limited
+separately, and a heavy user of one host does not use up its quota on
+another. `[rate_limit]` gives the default for routes that set none and for
+requests served by `default_pool`; a route's inline
+`rate_limit = { rate, burst }` replaces it, and `rate = 0` turns limiting
+off for that route. The rejected alternative, one bucket per client
+across all routes, cannot express per-route limits at all. The cost is one
+bucket per route a client uses, not one per client.
+
+Route identities are interned by host name in the table (`""` for the
+default pool), not by position in the config, so a snapshot rebuilt on
+reload (Phase 7) finds every client's bucket where it left it, under the
+new limit.
+
+### A bucket is one atomic number
+
+PLAN.md says to store the token count and the last refill time and
+compute the refill on access. The first version did exactly that: two
+`int64`s per bucket, tokens counted in nanoseconds of credit (one token is
+one interval, `1e9/rate` ns), so a refill is one addition and the steady
+rate is exact with no float drift. Each shard was a `sync.Mutex` over a
+`map[key]bucket`.
+
+The mutex profile under load showed the flaw. One client sending ~60k
+requests per second over 100 connections puts every request on the same
+bucket, so on the same shard lock. Identical runs put the limiter at 3%,
+4%, 81% and 91% of all mutex wait. Once a waiter has waited over a
+millisecond, Go's mutex switches to starvation mode and hands the lock to
+waiters strictly in order, and each handoff then waits for the woken
+goroutine to be scheduled: a convoy. Any lock on a per-key state would do
+this for one hot key, and one hot key is exactly what an abusive client
+is.
+
+So the two fields are folded into one: `full`, the time at which the
+bucket will have refilled to capacity. At any time
+`tokens = capacity - max(0, full - now)`, and spending one request moves
+`full` to `max(full, now) + interval`. This is the same bucket, encoded so
+that one compare-and-swap updates it; the form is known as GCRA (generic
+cell rate algorithm). The arithmetic is still integer nanoseconds and
+exact. A clock that steps back earns nothing. When a limit shrinks on
+reload, credit spent under the larger capacity is still owed.
+
+Each shard is now a `sync.RWMutex` over `map[key]*bucket`. A request for a
+known client takes the read lock, which only blocks while a writer holds
+it, and spends with CAS. The write lock is for adding a bucket, evicting
+one and sweeping. The spend happens under the read lock, so a sweep never
+deletes a bucket while a request is spending from it. Racing spends on one
+bucket retry their CAS; a test races eight goroutines on one bucket at one
+instant and gets exactly the burst. After the change the limiter's share
+of mutex wait in the single-hot-client run was 0 to 0.03 ms in four runs
+(607 ms before), and 0.96% in the full bench. `Allow` costs 88 ns on four
+cores for one hot client (132 ns before) and 32 ns for many clients (57
+ns), with no allocation for a known client.
+
+The costs: one 8-byte allocation per new client, which the GC must track
+through the map's pointers, and a departure from the plan's literal
+representation. The alternatives were a per-bucket mutex (keeps two fields
+but still convoys on the hot key's own mutex) or keeping the mutex and
+documenting the convoy (the done-when check would stay flaky).
+
+### Shards: 256, seeded, padded
+
+A key is `{route uint32, addr [16]byte}`; `hash/maphash` with a per-table
+random seed picks the shard, so a client choosing its addresses cannot aim
+them all at one shard. Each shard is padded to 64 bytes so two shards'
+locks never share a cache line.
+
+The shard count is set by the write-locked work, not by request
+contention, since known clients only read-lock. A sweep walks one shard
+under its write lock; at a million entries a shard of 256 holds about
+4,000, a pause well under 100 µs for the requests that hash there. More
+shards would shorten that pause further but cost a cache line each and
+make the per-shard cap coarser at small `max_entries`. 256 is also the
+smallest `max_entries` the config accepts, one bucket per shard.
+
+### Bounded memory: cap, evict the nearest-to-full, sweep
+
+`max_entries` is split evenly across shards. When a new client arrives at
+a full shard, eight entries are sampled; Go randomises where map
+iteration starts, so the sample is spread over the shard. A sampled bucket
+that has already refilled is dropped, which loses nothing. Otherwise the
+one closest to full goes, which forgives the least debt. This fails open
+for that one client: if it returns, it gets a fresh, full bucket. The
+rejected alternative, refusing clients the table has no room for, fails
+closed: an attacker with enough addresses to fill the table would lock
+out every new client. Evictions are counted
+(`proxy_rate_limit_evictions_total`), so a cap set too low shows.
+
+The sweeper is one goroutine per table, on a ticker (`sweep_ms`, default
+10 s), stopped by `Table.Close`. `run` owns it and defers the Close, and
+goleak checks it in tests. It drops every bucket whose `full` has passed,
+since a full bucket is the same as no bucket. Only clients seen within one
+refill time (`burst / rate`) hold memory.
+
+Go maps never give memory back on delete, so a sweep rebuilds a shard's
+map once it falls below a quarter of its peak. Measured: with
+`max_entries` 100,000, a million distinct keys grow the heap by 11.5 MB,
+115 bytes per capped entry. That is a 32-byte map slot plus a control
+byte, and the 8-byte bucket; under eviction churn, deleted-slot markers
+keep the Swiss-table map at about 2.5 slots per live entry. A second
+million keys add 1%. The default cap is 100,000, about 12 MB.
+
+### The client's address
+
+The key is the TCP peer's address, IPv4-mapped addresses unmapped. An
+IPv6 client is keyed by its /64, since one host usually holds a whole /64
+and could rotate through it. The cost is that hosts sharing a /64 share a
+limit.
+
+`X-Forwarded-For` is ignored unless the peer is in `trusted_proxies`
+(addresses or CIDR prefixes, top level, since the per-IP connection cap
+uses it too and Phase 8's header rewrite will). Anyone can write the
+header, so believing it from an arbitrary client would let every request
+claim a new identity. From a trusted proxy, the header is read right to
+left: trusted addresses are hops, and the first untrusted one is the
+client. Everything left of it was written by the client and is never read.
+If every address is trusted, the leftmost is the client. An entry that is
+not an address, met before the client is found, gives the peer: a broken
+chain never lets the client choose its key. Ports on entries are ignored.
+The walk allocates nothing.
+
+What the proxy sends upstream in `X-Forwarded-For` is unchanged (it
+appends the peer); Phase 8 overwrites it for untrusted clients.
+
+### Where the check runs, and the 429
+
+The check runs after routing and before backend selection: 421 and 404
+come first (a request with no route has no limit to apply), and a refused
+request costs no balancer pick and no upstream connection. With no
+`default_pool`, unknown hosts get an unlimited 404, which is cheap.
+
+The 429 carries `Retry-After`: the time until one request's credit
+returns, rounded up to whole seconds, at least 1. A request without a body
+keeps its connection, since closing it would make a client that retries
+pay for a new TCP and TLS handshake every time: the CPU the limit is meant
+to protect. A request with a body closes the connection with the
+lingering close other refusals use, because the unread body is still on
+it. The writer is fixed text plus one number, built without allocating,
+since an over-limit client can ask for it as fast as it likes. The access
+log line has status 429 and `error: "rate limited: client <addr>"`,
+naming the address the limit applied to, which differs from `client` when
+a trusted proxy forwarded the request.
+
+### Per-IP connection cap at accept
+
+`limits.max_conns_per_ip` is enforced in the connection tracker, under the
+mutex `Add` already takes for the total cap, as a `map[netip.Addr]int`
+keyed like the buckets (IPv6 per /64). So it adds no new shared state:
+the tracker was already shared between the accept loop and the connection
+goroutines. A connection past the cap is closed at accept, before the TLS
+handshake, which is the CPU this protects. Trusted proxies are exempt,
+since they carry many clients' connections. Refusals are counted by reason
+(`proxy_client_connections_rejected_total{reason="max_conns"|"per_ip"}`).
+Per-IP refusals are logged at debug level only, because one abusive
+client at its cap would otherwise flood the log. Like `max_conns`, the cap
+applies from startup and is not reloaded. Both are off by default (0);
+the lab sets 2,048, enough for Phase 9's runs at concurrency 1,000.
+
+### Metrics
+
+- `proxy_rate_limited_requests_total{route}`: 429s by route host, `""`
+  for the default pool. A plain atomic on the request's target, read at
+  scrape time like the Phase 5 counters.
+- `proxy_rate_limit_buckets` and `proxy_rate_limit_buckets_max`: table size
+  and cap.
+- `proxy_rate_limit_evictions_total`.
+- `proxy_client_connections_rejected_total{reason}`.
+
+The 429s are also in `proxy_requests_total` under their pool with an empty
+backend, like 503.
+
+### Tests and benches
+
+- `internal/ratelimit`:
+  - with an injected clock: burst then exactly the rate, each acceptance
+    on the 200 ms mark; refill capped at the burst; partial waits; a clock
+    going backwards; a shrinking limit; the token count derived from
+    `full`.
+  - concurrency: eight goroutines on one bucket get exactly the burst.
+  - table behaviour: clients and routes separate; state kept across
+    limiters for one route; IPv6 /64 keying; sweep, map shrink, cap and
+    eviction (preferring full buckets).
+  - memory: a million keys against a 100,000 cap, then a second million.
+  - zero allocations; the `X-Forwarded-For` walk, table-driven.
+- `internal/conn`:
+  - 429 with `Retry-After` on a kept connection, and HEAD.
+  - unlimited routes, the default pool's own bucket.
+  - closing on a body, `Connection: close` or HTTP/1.0.
+  - `X-Forwarded-For` ignored from untrusted peers and used from trusted
+    ones.
+  - the per-IP cap with 127.0.0.2 as a second address.
+- `test/integration/phase6_test.go`, over HTTP and HTTPS:
+  - an open-loop client at twice the limit (100/s, burst 10) for 3 s,
+    with a second client from 127.0.0.2 at half: 309 accepted against
+    310 expected, the second client never limited, `/metrics` matching.
+  - per-route limits.
+  - the per-IP cap at accept, before the handshake.
+- `bench/phase6/k6.sh` (lab): k6 constant-arrival-rate at 400/s from
+  `loadgen` and 100/s from `loadgen2` against `limited.test` (200/s,
+  burst 20) for 60 s.
+- `bench/phase6/race-profile.sh`: two wrk runs at once, first against a
+  `-race` build, then against a normal build with a 10 s mutex and CPU
+  profile.
+  - one client (100 connections, one bucket) on the default pool, limited
+    to 10^6/s so nothing is refused.
+  - a random `X-Forwarded-For` per request from a trusted 127.0.0.1 to
+    `many.test` (1/s, burst 10), so each new client's bucket stays short
+    of full and the 4,096-entry table evicts the whole time, with the
+    sweeper running every 100 ms.
+
+WSL2 steps the wall clock, by about 2.5 s every half minute; measured
+against `time.monotonic`. Three tools time with the wall clock and were
+fooled until handled:
+- k6's reported rates. `k6.sh` divides by the scheduled duration and
+  checks that k6 sent every scheduled iteration.
+- wrk's timeouts. A backward step makes the request in flight on each
+  connection look timed out: exactly one per connection. `race-profile.sh`
+  measures the step, tolerates at most one "timeout" per connection when
+  there was one, and requires every line of the proxy's access log, which
+  times with the monotonic clock, to be a 200.
+- `UnixNano` in a test. The integration test measures its own span with
+  `time.Since`.
+
+The proxy itself only uses monotonic time for deadlines and buckets.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H):
+
+- k6 in the lab, 400/s against a 200/s limit for 60 s: 12,019 accepted,
+  200.32/s (+0.16%), 199.98/s after the burst. 11,982 got 429, matching
+  `proxy_rate_limited_requests_total`. The second client: 6,001 of 6,001
+  accepted. p99 1.0 ms and 1.2 ms.
+- `-race` build, 30 s: 0 data races, 390,825 requests all 200 in the
+  access log, the table at most 3,942 of 4,096 buckets with 63,448
+  evictions. wrk counted 97 and 50 "timeouts", one per connection, from a
+  2.48 s clock step during the run.
+- Mutex profile, normal build, 35.8k req/s for one client plus 17.7k
+  req/s for random clients: 169.5 ms of mutex wait in 10 s, 1.62 ms
+  (0.96%) of it in the rate limiter. The largest site is the access log's
+  `slog` handler (83%), as in Phase 4.

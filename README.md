@@ -8,14 +8,15 @@ it uses only the parsers and serialisers (`ReadRequest`, `ReadResponse`,
 `Request.Write`, `Response.Write`, `Header`). `http.Server`, `http.Transport`,
 `http.Client` and `httputil.ReverseProxy` are not used on the request path.
 
-**Status:** Phase 5 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
+**Status:** Phase 6 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
 certificate and the pool on one port; round-robin, least-connections or
 consistent hashing across each pool, from a TOML config file; upstream
 connections kept alive and reused through the proxy's own pool; active and
 passive health checks that eject failing backends and re-admit them;
-retries on another backend; Prometheus `/metrics`, a JSON `/status` and
-pprof on a loopback admin listener). Per-client rate limiting arrives in
-Phase 6.
+retries on another backend; per-client token-bucket rate limits per route
+with 429 and `Retry-After`, and a per-IP connection cap; Prometheus
+`/metrics`, a JSON `/status` and pprof on a loopback admin listener). Hot
+reload and graceful shutdown arrive in Phase 7.
 
 ## Layout
 
@@ -58,6 +59,8 @@ make bench-scaling      # throughput at GOMAXPROCS 1, 2 and 4
 make bench-profile      # mutex, block and CPU profiles under load
 make bench-kill         # kill -9 one of three backends under wrk (-race build), then restart it
 make bench-stop         # SIGSTOP one of three backends under wrk (-race build), then SIGCONT
+make bench-ratelimit-k6   # k6 at twice the rate limit plus a second client, in the lab (lab must be up)
+make bench-ratelimit-race # -race run and mutex profile with the rate-limit table under load
 ```
 
 ## Running the proxy
@@ -106,6 +109,7 @@ and whether the session was resumed.
 
 ```toml
 default_pool = "web"            # optional: hosts with no route; else 404
+trusted_proxies = ["10.0.0.0/24"]  # optional: X-Forwarded-For is believed only from these
 
 [[listener]]                    # one or more
 address = "0.0.0.0:8443"
@@ -117,6 +121,7 @@ host = "a.test"
 pool = "web"
 cert = "certs/a.test.crt"       # PEM chain and key, relative to this file;
 key  = "certs/a.test.key"       # needed on HTTPS unless [tls] has a default
+rate_limit = { rate = 20, burst = 10 }  # optional: replaces [rate_limit]'s; rate = 0 turns it off
 
 [tls]                           # optional
 default_cert = "certs/default.crt"  # for unknown or missing SNI; without it
@@ -141,6 +146,14 @@ upstream_response_ms = 10000
 [limits]                        # optional; defaults shown
 max_conns        = 10000
 max_header_bytes = 65536
+max_conns_per_ip = 0            # per client address (IPv6: per /64), at accept; 0 = no cap
+
+[rate_limit]                    # optional; defaults shown (limiting off)
+rate        = 0                 # requests per second per client, for routes that set none
+                                # and the default pool; 0 = off; fractions allowed
+# burst     = 50                # required when rate is set
+max_entries = 100000            # buckets held across all routes (about 115 bytes each)
+sweep_ms    = 10000             # how often buckets that have refilled are dropped
 
 [upstream]                      # optional; defaults shown
 max_idle_per_backend = 100      # idle keep-alive connections per backend address; 0 = no reuse
@@ -177,7 +190,7 @@ What the proxy does so far: keep-alive to clients,
 streaming bodies in both directions (`Content-Length` and chunked) with
 backpressure, hop-by-hop header removal, `X-Forwarded-For` and
 `X-Forwarded-Proto` (`http` or `https`), `100 Continue`, and 400, 404,
-408, 421, 431, 502 and 504 on the failures they name. Consistent hashing uses 160 virtual nodes per
+408, 421, 429, 431, 502, 503 and 504 on the failures they name. Consistent hashing uses 160 virtual nodes per
 backend; requests without the hash header are keyed on the client IP. Each
 backend address has a LIFO pool of idle keep-alive connections, shared by
 every pool that lists the address. A connection is reused only after a
@@ -202,10 +215,25 @@ HEAD, OPTIONS or TRACE without a body; the access log reports `retries`.
 backend is out of rotation within milliseconds; a SIGSTOPped one is out
 after one response timeout (`bench/phase5/results/`).
 
+Rate limiting: each route holds each client address to a token bucket of
+`rate` per second and `burst` at once; an IPv6 client is one /64. The
+check runs after routing and before a backend is chosen. A request over
+the limit gets 429 with `Retry-After` in seconds, and the connection stays
+open unless the request had a body. The client is the TCP peer;
+`X-Forwarded-For` counts only when the peer is in `trusted_proxies`, and
+then the client is its rightmost address that is not a trusted proxy.
+Buckets live in one sharded table capped at `max_entries`; a full one is
+dropped by the sweeper, and when the table is full the bucket closest to
+full is evicted. `max_conns_per_ip` closes a client's connections past the
+cap at accept, before the TLS handshake; trusted proxies are exempt. k6
+at twice the limit from one client is accepted at 200.3/s against 200/s
+while a second client is never limited (`bench/phase6/results/`).
+
 Admin listener: `/metrics` (Prometheus: requests by pool, backend and
 status, latency histogram by pool, in-flight requests, upstream dials and
 reuses, backend health and transitions, retries by reason, client
-connections, Go runtime), `/status` (JSON: pools and backends with their
+connections and connections refused at accept by reason, rate-limited
+requests by route, rate-limit table size and evictions, Go runtime), `/status` (JSON: pools and backends with their
 health, last check and connection counts) and `/debug/pprof/`.
 
 ## Test backend
@@ -230,7 +258,10 @@ pool with the `default.test` certificate, `a.test` on least-connections
 and `b.test` on consistent hashing by `X-User-Id`, each with its own
 certificate), `backend1`–`backend3` (`10.0.0.11`–`.13`, port 8000) and a
 load generator with curl, wrk and k6 (`10.0.0.20`, the lab CA at
-`/work/ca.crt`) on one network. Prometheus runs in the proxy container's
+`/work/ca.crt`), and a second one (`loadgen2`, `10.0.0.21`) for checks
+that need two client addresses, on one network. `limited.test` is
+rate limited to 200 requests per second per client with a burst of 20,
+and each client address may hold 2,048 connections. Prometheus runs in the proxy container's
 network namespace, scrapes its loopback admin listener every 2 s, and
 serves its UI on `10.0.0.10:9090` inside the lab network. `make lab-up` creates the certificates if
 needed and runs the proxy container as you, so it can read the keys in

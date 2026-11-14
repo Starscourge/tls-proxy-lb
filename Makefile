@@ -8,7 +8,7 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
 .PHONY: all build test test-unit test-integration lint vuln fmt certs \
         check-config lab-up lab-down lab-check netem-check prom-check wrk-race bench-lb testssl \
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
-        bench-kill bench-stop clean
+        bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race clean
 
 all: build test lint
 
@@ -96,6 +96,12 @@ bench-kill:              # kill -9 one of three backends under wrk, then restart
 	bench/phase5/failover.sh kill
 bench-stop:              # SIGSTOP one of three backends under wrk, then SIGCONT
 	bench/phase5/failover.sh stop
+
+# Phase 6 "Done when" items; results in bench/phase6/results/.
+bench-ratelimit-k6:      # k6 at twice the limit plus a second client, in the lab (lab must be up)
+	bench/phase6/k6.sh
+bench-ratelimit-race:    # -race run and mutex profile with the rate-limit table under load
+	bench/phase6/race-profile.sh
 
 clean:
 	rm -rf $(BIN)

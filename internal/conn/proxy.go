@@ -60,6 +60,10 @@ type Proxy struct {
 	// Logger receives one "access" line per request plus errors. Nil
 	// discards.
 	Logger *slog.Logger
+	// AccessLog, if set, receives the access lines instead of Logger, each
+	// encoded by the proxy in one Write, in the same JSON as Logger's
+	// handler if that is slog's JSONHandler. It must not keep the slice.
+	AccessLog io.Writer
 	// TLS, if non-nil, makes the proxy terminate TLS (tlsx.ServerConfig).
 	// Nil serves plain HTTP.
 	TLS *tls.Config
@@ -194,6 +198,7 @@ type clientConn struct {
 	// Per-request state, kept here so each request reuses it rather than
 	// allocating its own. Each is valid for one request at a time.
 	rec       accessRecord
+	logLine   []byte // the access line's buffer, reused across requests
 	reqBody   httpx.Body
 	respBody  httpx.Body
 	reqFlush  flushingReader

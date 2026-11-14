@@ -3,16 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -309,7 +310,8 @@ backends = [{ address = %q }]
 	sigs := make(chan os.Signal, 1)
 	ready := make(chan app.Listening, 1)
 	errc := make(chan error, 1)
-	go func() { errc <- run(cfg.Source, cfg, slog.New(slog.DiscardHandler), sigs, ready) }()
+	access := &lockedBuffer{}
+	go func() { errc <- run(cfg.Source, cfg, app.Options{AccessLog: access}, sigs, ready) }()
 	var addrs []string
 	select {
 	case l := <-ready:
@@ -377,6 +379,38 @@ backends = [{ address = %q }]
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after SIGTERM")
 	}
+
+	// The four proxied requests' access lines went to AccessLog, as JSON;
+	// the redirect writes none.
+	schemes := map[string]int{}
+	for line := range strings.Lines(access.String()) {
+		var l struct{ Msg, Scheme string }
+		if err := json.Unmarshal([]byte(line), &l); err != nil || l.Msg != "access" {
+			t.Fatalf("access log line %q: %v", line, err)
+		}
+		schemes[l.Scheme]++
+	}
+	if schemes["https"] != 2 || schemes["http"] != 2 || len(schemes) != 2 {
+		t.Fatalf("access lines by scheme %v, want 2 https and 2 http", schemes)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe to write from many goroutines.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestRunFailsOnBusyListener: if any listener cannot open, run fails at
@@ -408,7 +442,7 @@ mode = "http"
 [pool.p]
 backends = [{ address = "127.0.0.1:1" }]
 `, freeAddr, busy.Addr().String()))
-	err = run(cfg.Source, cfg, slog.New(slog.DiscardHandler), nil, nil)
+	err = run(cfg.Source, cfg, app.Options{}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "listen "+busy.Addr().String()) {
 		t.Fatalf("run = %v, want a listen error for the busy address", err)
 	}
@@ -439,7 +473,7 @@ address = "127.0.0.1:0"
 	sigs := make(chan os.Signal, 1)
 	ready := make(chan app.Listening, 1)
 	errc := make(chan error, 1)
-	go func() { errc <- run(cfg.Source, cfg, slog.New(slog.DiscardHandler), sigs, ready) }()
+	go func() { errc <- run(cfg.Source, cfg, app.Options{}, sigs, ready) }()
 	var l app.Listening
 	select {
 	case l = <-ready:

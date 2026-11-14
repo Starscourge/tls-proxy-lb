@@ -119,7 +119,7 @@ func startProxySnapshot(t *testing.T, snap *config.Snapshot) (string, *Server, *
 func startProxyWith(t *testing.T, snap *config.Snapshot, mut func(*Proxy)) (string, *Server, *logBuf) {
 	t.Helper()
 	logs := &logBuf{}
-	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(logs, nil))}
+	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(logs, nil)), AccessLog: logs}
 	if mut != nil {
 		mut(p)
 	}

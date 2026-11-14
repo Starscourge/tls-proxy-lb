@@ -106,8 +106,13 @@ func checkConfig(path string, stdout, stderr io.Writer) int {
 // config's shutdown_ms and returns nil, whether or not the drain finished
 // in time. A listener that fails ends the run with its error, after the
 // same drain.
-func run(path string, cfg *config.Config, logger *slog.Logger, sigs <-chan os.Signal, ready chan<- app.Listening) error {
-	a, err := app.New(cfg, app.Options{Logger: logger, Version: version})
+func run(path string, cfg *config.Config, opts app.Options, sigs <-chan os.Signal, ready chan<- app.Listening) error {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	opts.Logger, opts.Version = logger, version
+	a, err := app.New(cfg, opts)
 	if err != nil {
 		return err
 	}
@@ -163,7 +168,8 @@ func main() {
 	// Buffered, so a signal that arrives while a reload runs is not lost.
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
-	err = run(o.configPath, cfg, logger, sigs, nil)
+	// Access lines skip slog and go straight to out, in the same JSON.
+	err = run(o.configPath, cfg, app.Options{Logger: logger, AccessLog: out}, sigs, nil)
 	signal.Stop(sigs)
 	if err != nil {
 		logger.Error("proxy failed", "err", err)

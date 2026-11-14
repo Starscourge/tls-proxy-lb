@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"runtime"
@@ -48,6 +49,9 @@ const adminShutdownTimeout = 2 * time.Second
 type Options struct {
 	// Logger receives the proxy's log. Nil discards.
 	Logger *slog.Logger
+	// AccessLog, if set, receives the access lines instead of Logger
+	// (conn.Proxy.AccessLog): the writer under Logger's JSON handler.
+	AccessLog io.Writer
 	// Version is reported in the startup log line.
 	Version string
 }
@@ -162,9 +166,9 @@ func New(cfg *config.Config, o Options) (*App, error) {
 	}
 	a.srv.Tracker().SetLimits(trackerLimits(snap))
 	a.store = config.NewStore(snap)
-	a.https = &conn.Proxy{Config: a.store, Logger: logger, Metrics: a.m,
+	a.https = &conn.Proxy{Config: a.store, Logger: logger, AccessLog: o.AccessLog, Metrics: a.m,
 		TLS: tlsx.ServerConfig(func() *tlsx.CertSet { return a.store.Load().Certs })}
-	a.plain = &conn.Proxy{Config: a.store, Logger: logger, Metrics: a.m}
+	a.plain = &conn.Proxy{Config: a.store, Logger: logger, AccessLog: o.AccessLog, Metrics: a.m}
 	if _, err := a.handlers(snap); err != nil {
 		a.closeRuntime()
 		return nil, err

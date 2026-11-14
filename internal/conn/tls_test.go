@@ -84,9 +84,10 @@ backends = [{ address = %q }]
 	store := config.NewStore(newSnapshot(t, c))
 	f.logs = &logBuf{}
 	p := &Proxy{
-		Config: store,
-		Logger: slog.New(slog.NewJSONHandler(f.logs, nil)),
-		TLS:    tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs }),
+		Config:    store,
+		Logger:    slog.New(slog.NewJSONHandler(f.logs, nil)),
+		AccessLog: f.logs,
+		TLS:       tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs }),
 	}
 	s := NewServer(Limits{}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

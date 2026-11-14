@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[pool.0]\nAlgorithm=\"consistent_hash\"\nhAsh_keY=\"header:_\"\n[limits]\nmax_conns_per_ip=0\nmax_header_count=0\n-=0\nmax_body_bytes=0\nmax_requests_per_conn=0\nmin_body_rate=0")

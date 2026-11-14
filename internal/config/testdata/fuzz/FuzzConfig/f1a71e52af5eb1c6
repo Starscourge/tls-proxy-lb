@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[upstream]\nidle_timeout_ms=0")

@@ -1,0 +1,3 @@
+go test fuzz v1
+byte('\u009c')
+[]byte("\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v\v")

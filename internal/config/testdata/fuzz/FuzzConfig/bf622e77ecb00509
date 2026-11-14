@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[listener]]\nAddress=\"0:0\"\n[[listener]]\nAddress=\"0:0\"\n[[listener]]\nAddress=\"0\" \n[pool.0]\nBACkends=[{},{},{}]\n[pool.1]\nBACkends=[{},{},{}]\n[pool.2]\nBACkends=[{},{},{}]\n[admin]\naddress=\"0:0\"")

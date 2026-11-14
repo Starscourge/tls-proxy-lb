@@ -1758,3 +1758,208 @@ On the development machine (WSL2, Core Ultra 7 155H):
 - `docker stop` in the lab, with a 3 s request 1 s in: 2.35 s, exit code
   0, the request answered 200 with `Connection: close`, the drain
   2.0 s.
+
+## Phase 8: Hardening and fuzzing
+
+The threat model is `docs/THREAT_MODEL.md`; what `net/http` accepts and
+what the proxy refuses on top is `docs/SMUGGLING.md`; what the fuzzers
+found is `docs/FUZZING.md`. This section records the decisions.
+
+### Check the header block as it arrived, after net/http has parsed it
+
+`http.ReadRequest` stays the parser: it rejects most malformed input, and
+a hand-written parser is where smuggling bugs come from. But it
+normalises some ambiguous input silently (CL with TE, a space before a
+colon, bare LF, folded lines, TE on HTTP/1.0), and by then the evidence
+is gone: the parsed header map cannot say whether a line ended in LF or
+whether a name had a trailing space. So the proxy keeps the raw bytes.
+`HeaderLimitReader`, which already sat between the socket and the
+`bufio.Reader` to cap header size, also records what it reads while the
+header limit is on, seeded with whatever the `bufio.Reader` already held
+from a pipelined request. After `http.ReadRequest` accepts the request,
+`CheckRaw` scans that copy line by line: one pass, no allocation, about a
+dozen rules.
+
+The alternatives were a parser of our own in front of `net/http`, which
+would duplicate the parsing that matters most, or scanning `br.Peek` with
+a buffer as big as `max_header_bytes`, which would cost 64 KiB per idle
+connection. The cost here is a copy of each header block, usually a few
+hundred bytes, into a per-connection buffer that is dropped if a large
+block grew it past 16 KiB.
+
+`httpx.ReadRequest` wraps the whole sequence (record, parse, check), so
+the connection loop and `FuzzRequestPath` run the same code.
+
+### Refuse, do not repair
+
+An ambiguous request is answered 400 and its connection closed. Picking
+one reading (as `net/http` does with CL plus TE) is safe only if every
+other parser on the path picks the same, and the proxy cannot know that
+about a CDN in front or a backend behind. Clients that send these
+requests are broken or attacking. Two near-misses stay accepted because
+the RFCs allow them and re-serialisation removes any doubt: `Chunked` in
+another case, and a CL with leading zeros.
+
+### Trailers lose their framing fields
+
+`net/http` merges every field of a chunked body's trailer into
+`Request.Trailer`, framing fields included, and `Request.Write` sends that
+map on. A backend that merges trailers into the header would then see a
+second `Content-Length` after the fact. `Body` cleans the map
+(`SanitizeTrailer`) the moment the body reaches EOF, before
+`Request.Write` writes the trailer from the same map. Dropping all
+trailers was the alternative; they are rare but legitimate (checksums,
+gRPC-style status), so only the dangerous fields go.
+
+### The request target must be one a proxy forwards
+
+`FuzzRequestPath` found it within seconds: `00 A:0 HTTP/1.0` parses, with
+the target as an opaque URL, and `Request.Write` sends it as `0`. The
+proxy forwarding something other than what it parsed is the definition of
+a smuggling risk, so targets are now limited to origin-form, http(s)
+absolute-form with a host, and `*` for `OPTIONS` (`bad_target`).
+
+### Limits: what has a default and what does not
+
+| Setting | Default | Source of the default |
+| --- | --- | --- |
+| `max_header_count` | 100 | Apache `LimitRequestFields` |
+| `max_request_line` | 8 KiB | nginx `large_client_header_buffers` |
+| `max_requests_per_conn` | 1,000 | nginx `keepalive_requests` |
+| `min_body_rate` | 500 B/s after 10 s | Apache mod_reqtimeout `MinRate` |
+| `max_body_bytes` | none | see below |
+
+`max_body_bytes` has no default cap. Bodies stream through fixed buffers,
+and a request with a body is retried only if the dial fails, before any of
+it is read, so the proxy never holds one. `TestUncappedUploadDoesNotGrowMemory`
+pushes 1 GiB through and the heap grows 3 MiB. A default such as nginx's
+1 MiB would break uploads for no gain to the proxy; the risk is to
+backends that read a body whole, so the lab sets 100 MiB and the README
+says to set it for such backends. A Content-Length over the cap gets 413
+before anything is forwarded; a chunked body gets 413 when it crosses the
+cap, if the backend has not answered yet.
+
+`max_requests_per_conn` changes behaviour clients see: the 1,000th
+response on a connection says `Connection: close`. Two earlier tests sent
+more than that on one raw connection; the Phase 1 test now expects the
+close, and the Phase 4 clients reconnect as real ones do.
+
+All the new limits reload.
+
+### The minimum body rate is a deadline, not a timer
+
+A minimum rate could be checked after each read, but a client that sends
+nothing would then be caught only by the 60 s stall timeout. Instead each
+read's deadline is the earlier of the stall timeout and
+`start + grace + bytes/rate`: the time by which this many bytes were due.
+Every byte moves it 1/rate seconds later, as with Apache's
+mod_reqtimeout, so a steady upload never notices it and a trickle is cut
+off however often it sends a byte. When the rate deadline is the one that
+fires, the error is `ErrBodyTooSlow`, answered 408 if no response has
+started. The computation splits seconds from the remainder so it cannot
+overflow for bodies over 9 GB.
+
+### X-Forwarded-For: overwrite from strangers
+
+Phase 1 appended the client's address to whatever `X-Forwarded-For` it
+sent, so a backend reading the leftmost entry believed the client. Now,
+unless the peer is in `trusted_proxies`, the header is replaced with the
+peer's address and `Forwarded` (the standard form of the same claim) is
+dropped. A trusted proxy's chain is appended to as before. Hop-by-hop
+removal runs first, so a client naming `X-Forwarded-For` in `Connection`
+removes only its own copy.
+
+### Recover per connection, and in the writer
+
+Go ends the whole process on an unrecovered panic in any goroutine. A
+`recover` deferred at the top of each connection goroutine logs the panic
+with its stack, counts it, and lets the connection close as on any other
+return; the handler's own defers (buffers, the upstream connection, the
+request writer) have already run during the unwind. The request-body
+writer is a goroutine of its own, out of reach of that recover, so it has
+its own: the panic fails the request and closes the upstream connection,
+which wakes the response reader. A first version passed the writer a
+method value for the panic handler, which escaped to the heap on every
+request; it now takes the `*clientConn`, and allocations per request are
+back to Phase 4's numbers (35 for a reused GET).
+
+Recovering hides bugs, so every panic is counted in `proxy_panics_total`
+and logged at error level with its stack. Reload and startup run on the
+main goroutine and are not recovered: they run only code that also runs
+at startup, on the operator's config.
+
+### Accept backoff, and a stop channel per listener
+
+After an `Accept` error the loop waits 5 ms, doubling to 1 s, and resets
+after a success: `net/http`'s numbers. A fixed 10 ms (Phase 1) spun at 100
+retries a second for as long as the process was out of descriptors. The
+log line is limited to one a second with a count of the ones suppressed,
+and `proxy_accept_errors_total` counts all of them.
+
+A 1 s backoff exposed a gap: `CloseListener` and `Shutdown` close the
+listener, but a loop asleep in its backoff noticed only when the timer
+fired. Each listener now has a stop channel, closed by both, which the
+backoff waits on too.
+
+### Three response-framing fixes
+
+Before any fuzzing, the response target's own seeds failed. A response
+that cannot have a body (to HEAD, or a 1xx, 204 or 304) but carries no
+length made `Response.Write` add `Connection: close`, because it treats any
+HTTP/1.1 response without a length as close-delimited. The proxy meanwhile
+kept the connection, and the client dropped it: a lost keep-alive, not a
+desync. `Response.Uncompressed` is the one field that check consults, and
+nothing else on the write side reads it, so `PrepareResponse` sets it for
+bodiless responses. The same test showed a 204 to a POST going out with
+`Content-Length: 0`, which RFC 9110 forbids; a 1xx or 204 now has its
+length unset. A HEAD or 304 response keeps the length it was given, since
+that describes the resource.
+
+After four and a half minutes of fuzzing, `FuzzResponse` found the third,
+and the only one that desyncs a client: a backend's 204 that says
+`Transfer-Encoding: chunked`. `net/http` reads it with no body but keeps
+the field; `Response.Write` then writes the field and an empty last chunk,
+`0\r\n\r\n`. The client, knowing a 204 has no body, reads those five
+bytes as the start of the next response. Backends are trusted, but the
+proxy must not emit bytes a client misframes, so a 1xx, 204 or 304 now
+loses its `Transfer-Encoding`. A response to HEAD keeps it: `Response.Write`
+writes no body for HEAD, and the field describes the GET response.
+
+### Fuzz targets run the real code
+
+Each target calls the functions the proxy calls, not copies: the 1xx and
+101 loop moved from `conn` into `httpx.ReadResponse` so `FuzzResponse` runs
+it. Properties, not just "no panic":
+
+- `FuzzRequestPath`: if the proxy forwards anything, it parses as exactly
+  one request, with nothing left over, the same method, target, host and
+  body, an `X-Forwarded-For` that is the proxy's alone, no forbidden
+  trailer, and it passes `CheckRaw` itself.
+- `FuzzResponse` (with HEAD and HTTP/1.0 clients): the client gets the
+  interim responses and then exactly one response with the same status and
+  body, framed as `PrepareResponse` said, with no hop-by-hop field.
+- `FuzzConfig`: an error names the file; a config that parses has
+  listeners and valid timeouts, and (without certificate paths, which
+  could point at `/dev/zero`) builds a snapshot whose routes all resolve.
+
+The corpora committed under each package's `testdata/fuzz/` are what the
+fuzzer kept because they reached new coverage, plus the inputs that
+failed, so every `go test` replays them.
+
+### Privileges
+
+The image already ran as uid 10001. The lab now also drops every
+capability, sets `no-new-privileges` and mounts the root read-only, and
+`check-lab.sh` reads `/proc/1/status` to prove it. Docker lets an
+unprivileged user bind low ports, so the image needs no
+`CAP_NET_BIND_SERVICE`; the README shows the systemd lines for a host
+install. The proxy warns, rather than refuses, when started as root: some
+operators start as root and drop privileges outside it.
+
+### Smaller changes
+
+- `lab/prometheus-check.sh` sums only series scraped in the last 10 s.
+  When the proxy and Prometheus are recreated, the old process's series
+  stay within the 5-minute lookback with no staleness marker, and the sum
+  went backwards.
+- `govulncheck` runs in CI, pinned like `staticcheck`.

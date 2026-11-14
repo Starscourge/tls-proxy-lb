@@ -1,0 +1,33 @@
+# Phase 8: fuzzing, 12m per target, 7 workers each, all three at once
+date:     2026-11-14T08:45:28Z
+commit:   dbed423-dirty
+go:       go1.27.4 linux/amd64
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+
+target                cpu_s          execs     exec/s   corpus   crashers  result
+FuzzRequestPath        4517       34988465      48528      589          0  PASS
+FuzzResponse           4513       22570428      31348      344          0  PASS
+FuzzConfig             4468       14200791      19723     1009          0  PASS
+
+cpu_s: user plus system CPU-seconds, workers included; execs and exec/s from the last
+progress line; corpus: files now in testdata/fuzz/<target> (seeds in the code are extra).
+
+## FuzzRequestPath: last lines
+fuzz: elapsed: 12m0s, execs: 34988465 (50698/sec), new interesting: 46 (total: 604)
+fuzz: elapsed: 12m1s, execs: 34988465 (0/sec), new interesting: 46 (total: 604)
+PASS
+ok  	github.com/Starscourge/tls-proxy-lb/internal/httpx	721.135s
+
+## FuzzResponse: last lines
+fuzz: elapsed: 12m0s, execs: 22570428 (53673/sec), new interesting: 79 (total: 388)
+fuzz: elapsed: 12m0s, execs: 22570428 (0/sec), new interesting: 79 (total: 388)
+PASS
+ok  	github.com/Starscourge/tls-proxy-lb/internal/httpx	720.197s
+
+## FuzzConfig: last lines
+fuzz: elapsed: 12m0s, execs: 14200791 (26272/sec), new interesting: 301 (total: 1014)
+fuzz: elapsed: 12m0s, execs: 14200791 (0/sec), new interesting: 301 (total: 1014)
+PASS
+ok  	github.com/Starscourge/tls-proxy-lb/internal/config	720.566s
+
+RESULT: PASS

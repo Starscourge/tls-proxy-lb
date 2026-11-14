@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[pool.0]\nBACkends=[{Address=\":A\"}]\n[admin]\naddress=\":A\"")

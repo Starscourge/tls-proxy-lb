@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\ufadb\ufadb\ufae6\ufadb\ufadb\ufae6\ufae6\ufae6")

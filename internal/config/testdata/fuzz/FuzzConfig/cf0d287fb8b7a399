@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[listener]]\n[[rOute]]\n[[route]]\n[pool.1]\nBAckends=[]#00010107\nbACkends=[]\n#0020100\nBackends=1")

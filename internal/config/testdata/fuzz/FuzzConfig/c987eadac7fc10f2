@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[health]\nfall=0\npassive_failures=0")

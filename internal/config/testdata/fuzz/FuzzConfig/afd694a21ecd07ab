@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\n0= \"000\"\n00AAAAA0AAAAAAA= [\"00000000000\", \"00000000000\"]\n\n[[AAAAAAAA]]\nAAAaaaa= \"000000000000\"\naaaa   = \"0000\"\n\n[[listener]]\naaaaaaa = \"00000000000\"\n\n[[listener]]\naaaaaaa       = \"00000000000000\"\naaaa          = \"00000000\"\naaaaaaaa_aaaa = 1000\n\n[[route]]\naaaa = \"0000000\"\naaab = \"000000\"\naaac = \"0000000000000000\"\naaa  = \"0000000000000000\"\naaaa_aaaaa = {Aaaaa = 10, aaaaa = 100}\n\n[[route]]\naaaa = \"00000\"0\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n")

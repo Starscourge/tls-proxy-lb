@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\n[[\"aa=\"]]\n\nb=\"\"a[\na\n[aaa]]\naaa=\"\"\naaaa=\"0\"\n\n\xfa")

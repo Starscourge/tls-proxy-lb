@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[route]]\nrAte_limit={}\n[rate_limit]\nburst=0")

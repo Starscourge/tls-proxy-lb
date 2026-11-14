@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[listener]]\n0=\"0\" \n[[route]]\npool=\"000000\"\n[pool.0]\nBACkends=[{0=\"\"},{Address=\"0\"}]\n[pool.1]\nBACkends=[{Address=\"0\"},{Address=\"0:1\"}]\n[health]\npath=\"/0 \"")

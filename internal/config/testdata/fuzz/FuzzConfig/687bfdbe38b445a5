@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[route]]\npool=\"0\" \n[[route]]\npool=\"0\"")

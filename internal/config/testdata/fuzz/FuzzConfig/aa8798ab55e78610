@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[limits]\nmAX_Conns=0")

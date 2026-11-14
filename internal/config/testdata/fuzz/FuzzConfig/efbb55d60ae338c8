@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("trusted_proXies=[\"0:0\"]\n[[route]]\nhost=\"0::0:0::\"")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[health]\ntimeout_ms=0")

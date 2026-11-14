@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[timeouts]\nupstream_response_ms=0\nidle_ms=0")

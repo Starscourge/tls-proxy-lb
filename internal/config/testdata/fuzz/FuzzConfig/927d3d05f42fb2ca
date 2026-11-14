@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[listener]]\nmode=\"0\"\n[[listener]]\nmode=\"0\"")

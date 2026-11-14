@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[pool.0]\nAlgorithm=\"0\"\n[pool.1]\nAlgorithm=\"0\"\n[pool.2]\nAlgorithm=\"0\"")

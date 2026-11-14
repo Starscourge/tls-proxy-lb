@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[timeouts]\nidle_ms=87000000")

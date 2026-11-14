@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[route]]\npool=\"\"\nrate_limit={rate=0,burst=0} \n[tls]\ndefault_cert=\"\"\ndefault_key=\"\"\n[pool.0]\nalgorithm=\"\"\nbackends=[{address=\"\"},{address=\"\"},{address=\"\"}]\n[pool.1]\nalgorithm=\"\"\nbackends=[{address=\"\"},{address=\"\"},{address=\"\"}]\n[pool.2]\nalgorithm=\"\"\nhash_key=\"\"\nbackends=[{address=\"\"},{address=\"\"},{address=\"\"}]\n[timeouts]\nhandshake_ms=0\nheader_read_ms=0\nupstream_connect_ms=0\nupstream_response_ms=0\nidle_ms=0\nclient_io_ms=0")

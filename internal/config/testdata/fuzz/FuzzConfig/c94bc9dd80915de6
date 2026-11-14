@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[route]]\nCert=\"0\"\nkeY=\"0\"\n[[route]]\nhost=\"0.A\"\nCert=\"0\"\nkeY=\"0\" \n[[route]]\nhost=\"0.A\"\n[tls]\ndefAult_Cert=\"0\"\ndefAult_keY=\"0\"\n[pool.0]\nAlgorithm=\"0\"\n[admin]\naddress=\"0.0.0.A:0\"")

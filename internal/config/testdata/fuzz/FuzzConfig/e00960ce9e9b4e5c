@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[[listener]]\naddress=\":0\"\naA=\"\"\n[[route]]\n[pool.0]\nbackends=[{}]")

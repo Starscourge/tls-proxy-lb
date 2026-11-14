@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("0 / HTTP/1.0\r\n%:B\r\n7B:\r\nb 979:B\r\n\r\n028")

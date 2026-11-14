@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[pool.0]\nAlgorithm=\"consistent_hash\"\nhAsh_keY=\"header:0aaaaAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[pool.1]\nBAckends=[{}]#0000\nbAckends=[] ")

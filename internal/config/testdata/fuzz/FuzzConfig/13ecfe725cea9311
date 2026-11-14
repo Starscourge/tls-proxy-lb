@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[admin]\nblock_profile_rate_ns=0")

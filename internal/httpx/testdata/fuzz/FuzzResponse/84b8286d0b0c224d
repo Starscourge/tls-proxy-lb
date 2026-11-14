@@ -1,0 +1,3 @@
+go test fuzz v1
+byte('(')
+[]byte("\xf3\x8d\xac\xe4\xf3\x8d\xac\xc3")

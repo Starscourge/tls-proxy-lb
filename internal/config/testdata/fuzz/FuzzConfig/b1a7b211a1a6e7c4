@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[limits]\nmax_header_count=0\nmax_body_bytes=0\nmax_requests_per_conn=0")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[upstream]\nmax_retries=7")

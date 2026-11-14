@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[tls]\ndefAult_Cert=\"00000000000000000\"\ndefAult_keY=\"0\"")

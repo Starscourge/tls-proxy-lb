@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\n[[listene1]]\naddress = \":8080\"\nmode = \"http\"\n\n[[route]]\nhost = \"a.test\"\npool = \"p\"\n\n[pool.p]\nbackends = [{ address = \"r27.0.0.1:8000\" }]\n")

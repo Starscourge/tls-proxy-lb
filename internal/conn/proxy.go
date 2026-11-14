@@ -543,10 +543,18 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	if reqBody != nil {
 		rec.bytesIn = reqBody.N()
 	}
-	// Short-circuited, so the success path does not call isClientErr,
-	// whose errors.As target escapes to the heap.
-	upstreamBodyFailed := respBody != nil && respBody.Err() != nil && !isClientErr(respBody.Err())
+	// When the client's request body failed (too slow, too large, cut
+	// off), the writer closed the upstream connection, so a response
+	// body that fails after it failed because of the client: the backend
+	// did nothing wrong, and is neither charged nor credited. Without
+	// this a slow-body attack on a streaming endpoint ejected every
+	// backend (bench/phase8/slowhttptest.sh). Short-circuited, so the
+	// success path calls neither clientBodyFailed nor isClientErr, whose
+	// errors.As targets escape to the heap.
+	clientBodyErr := reqBody != nil && reqBody.Err() != nil && clientBodyFailed(reqBody)
+	upstreamBodyFailed := !clientBodyErr && respBody != nil && respBody.Err() != nil && !isClientErr(respBody.Err())
 	switch {
+	case clientBodyErr:
 	case upstreamBodyFailed || resp.StatusCode >= 500:
 		cc.reportFailure(ctx, b)
 	default:
@@ -555,9 +563,12 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	if werr != nil {
 		// Mid-response the status line is already out, so the only signal
 		// left is closing the connection.
-		if upstreamBodyFailed {
+		switch {
+		case clientBodyErr:
+			rec.err = fmt.Errorf("client body: %w", reqBody.Err())
+		case upstreamBodyFailed:
 			rec.err = fmt.Errorf("upstream body: %w", respBody.Err())
-		} else {
+		default:
 			rec.err = fmt.Errorf("client write: %w", werr)
 		}
 		cc.logAccess(rec)

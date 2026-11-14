@@ -14,6 +14,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -362,5 +363,39 @@ func TestRequestMetrics(t *testing.T) {
 	}
 	if n := f.m.Unrouted().Get(404); n != 1 {
 		t.Fatalf("unrouted 404s counted %d", n)
+	}
+}
+
+// A client whose request body fails mid-stream (here: below the minimum
+// rate) while the backend is already streaming its response must not
+// count against the backend. The writer closes the upstream connection
+// when the client fails, so the response read then fails too; that is the
+// proxy's doing. Found by bench/phase8/slowhttptest.sh: a slow-body attack
+// on /echo ejected every backend.
+func TestClientBodyFailureIsNotBackendFailure(t *testing.T) {
+	baddr, _ := startBackend(t, testbackend.Config{})
+	ho := health.Options{Rise: 1, Fall: 1, PassiveFailures: 1, Eject: time.Hour}
+	f := startFailover(t, []string{baddr}, ho, func(c *config.Config) {
+		c.Limits.MinBodyRate = 1000
+		c.Timeouts.BodyGrace = 200 * time.Millisecond
+	})
+	for i := range 3 {
+		cl := dialClient(t, f.addr)
+		// /echo answers 200 at once and streams the body back.
+		cl.send("POST /echo HTTP/1.1\r\nHost: known\r\nContent-Length: 100000\r\n\r\nabc")
+		cl.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.Copy(io.Discard, cl.br); isTimeout(err) {
+			t.Fatalf("request %d: connection not closed", i)
+		}
+		f.logs.waitAccess(t, i+1)
+	}
+	tg := f.chk.Target(baddr)
+	if !tg.Healthy() || tg.Status().PassiveFailures != 0 {
+		t.Fatalf("backend charged for the client's slow body: %+v", tg.Status())
+	}
+	for _, rec := range f.logs.access() {
+		if e, _ := rec["error"].(string); !strings.HasPrefix(e, "client body:") {
+			t.Errorf("access log error %q, want a client body error", e)
+		}
 	}
 }

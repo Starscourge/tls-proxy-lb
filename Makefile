@@ -10,7 +10,7 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
         bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race \
         bench-reload bench-reload-control stop-check fuzz bench-slowloris \
-        demo-kill demo-slow clean
+        bench bench-gc bench-hotspots demo-kill demo-slow clean
 
 all: build test lint
 
@@ -121,6 +121,13 @@ bench-slowloris:         # slowhttptest: slow headers, body and read at 5,000 co
 	bench/phase8/slowhttptest.sh
 
 # Phase 9 experiments; results and graphs in bench/phase9/results/.
+bench:                   # against nginx: 3 scenarios x 3 concurrencies x 3 runs, about 70 min
+	bench/phase9/bench.sh
+bench-gc:                # GOGC and GOMEMLIMIT settings: GC share of CPU, p99, memory; about 20 min
+	bench/phase9/gc.sh
+HOTSPOTS_BEFORE ?=
+bench-hotspots:          # profiles, and the proxy before and after the profile-guided changes; about 15 min
+	bench/phase9/hotspots.sh $(HOTSPOTS_BEFORE)
 demo-kill:               # docker kill one of three backends under k6 at 1,000 req/s, then start it
 	bench/phase9/demo-kill.sh
 demo-slow:               # netem delay, then loss, on one backend under three proxy configs

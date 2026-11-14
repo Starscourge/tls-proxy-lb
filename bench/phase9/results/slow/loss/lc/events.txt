@@ -1,0 +1,4 @@
+# events (epoch ms): first request, netem loss 5% added, removed
+1794658065266 load
+1794658085430 fault
+1794658105404 clear

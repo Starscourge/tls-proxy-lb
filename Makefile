@@ -10,7 +10,7 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
         bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race \
         bench-reload bench-reload-control stop-check fuzz bench-slowloris \
-        demo-kill clean
+        demo-kill demo-slow clean
 
 all: build test lint
 
@@ -123,6 +123,8 @@ bench-slowloris:         # slowhttptest: slow headers, body and read at 5,000 co
 # Phase 9 experiments; results and graphs in bench/phase9/results/.
 demo-kill:               # docker kill one of three backends under k6 at 1,000 req/s, then start it
 	bench/phase9/demo-kill.sh
+demo-slow:               # netem delay, then loss, on one backend under three proxy configs
+	bench/phase9/demo-slow.sh
 
 clean:
 	rm -rf $(BIN)

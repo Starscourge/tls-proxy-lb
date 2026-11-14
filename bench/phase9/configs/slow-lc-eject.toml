@@ -1,0 +1,38 @@
+# bench/phase9/demo-slow.sh, run "lc-eject": least-connections with passive ejection on timeouts. A response slower than 100 ms is a failure (the request is retried on another backend), three in a row eject the backend, and active checks with the same 100 ms timeout keep it out until it is fast again.
+# Mounted over lab/proxy.toml (PROXY_CONFIG); the certificates are the lab's.
+# Everything not set here is the proxy's default.
+default_pool = "all"
+
+[[listener]]
+address = "0.0.0.0:8443"
+
+[tls]
+default_cert = "certs/default.test.crt"
+default_key  = "certs/default.test.key"
+
+[pool.all]
+algorithm = "least_conn"
+backends  = [
+  { address = "10.0.0.11:8000" },
+  { address = "10.0.0.12:8000" },
+  { address = "10.0.0.13:8000" },
+]
+
+[timeouts]
+upstream_connect_ms  = 1000
+upstream_response_ms = 100
+
+[health]
+path             = "/healthz"
+interval_ms      = 1000
+timeout_ms       = 100
+rise             = 2
+fall             = 3
+passive_failures = 3
+eject_ms         = 5000
+
+[admin]
+address = "127.0.0.1:9901"
+
+[limits]
+max_conns_per_ip = 2048

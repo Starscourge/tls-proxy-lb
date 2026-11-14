@@ -1,0 +1,4 @@
+# events (epoch ms): first request, netem delay 200ms 20ms added, removed
+1794657694204 load
+1794657714345 fault
+1794657734340 clear

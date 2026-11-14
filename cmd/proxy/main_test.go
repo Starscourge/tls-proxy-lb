@@ -13,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"go.uber.org/goleak"
 
+	"github.com/Starscourge/tls-proxy-lb/internal/app"
 	"github.com/Starscourge/tls-proxy-lb/internal/config"
 	"github.com/Starscourge/tls-proxy-lb/internal/testbackend"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
@@ -265,7 +267,7 @@ func parseFile(t *testing.T, path, src string) *config.Config {
 
 // TestRunServesEveryListener: an HTTPS, a plain HTTP and a redirect
 // listener, each doing its job and routing by host, then a clean stop on
-// cancel.
+// SIGTERM.
 func TestRunServesEveryListener(t *testing.T) {
 	one, two := startBackend(t, "one"), startBackend(t, "two")
 	dir := t.TempDir()
@@ -304,15 +306,14 @@ backends = [{ address = %q }]
 backends = [{ address = %q }]
 `, one, two))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ready := make(chan listening, 1)
+	sigs := make(chan os.Signal, 1)
+	ready := make(chan app.Listening, 1)
 	errc := make(chan error, 1)
-	go func() { errc <- run(ctx, cfg, slog.New(slog.DiscardHandler), ready) }()
+	go func() { errc <- run(cfg.Source, cfg, slog.New(slog.DiscardHandler), sigs, ready) }()
 	var addrs []string
 	select {
 	case l := <-ready:
-		addrs = l.addrs
+		addrs = l.Addrs
 	case err := <-errc:
 		t.Fatalf("run exited early: %v", err)
 	}
@@ -367,14 +368,14 @@ backends = [{ address = %q }]
 	}
 	tr.CloseIdleConnections()
 
-	cancel()
+	sigs <- syscall.SIGTERM
 	select {
 	case err := <-errc:
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("run did not return after cancel")
+		t.Fatal("run did not return after SIGTERM")
 	}
 }
 
@@ -407,7 +408,7 @@ mode = "http"
 [pool.p]
 backends = [{ address = "127.0.0.1:1" }]
 `, freeAddr, busy.Addr().String()))
-	err = run(context.Background(), cfg, slog.New(slog.DiscardHandler), nil)
+	err = run(cfg.Source, cfg, slog.New(slog.DiscardHandler), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "listen "+busy.Addr().String()) {
 		t.Fatalf("run = %v, want a listen error for the busy address", err)
 	}
@@ -435,19 +436,18 @@ backends = [{ address = "127.0.0.1:1" }]
 [admin]
 address = "127.0.0.1:0"
 `)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ready := make(chan listening, 1)
+	sigs := make(chan os.Signal, 1)
+	ready := make(chan app.Listening, 1)
 	errc := make(chan error, 1)
-	go func() { errc <- run(ctx, cfg, slog.New(slog.DiscardHandler), ready) }()
-	var l listening
+	go func() { errc <- run(cfg.Source, cfg, slog.New(slog.DiscardHandler), sigs, ready) }()
+	var l app.Listening
 	select {
 	case l = <-ready:
 	case err := <-errc:
 		t.Fatalf("run exited early: %v", err)
 	}
 	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Get("http://" + l.admin + "/debug/pprof/goroutine?debug=1")
+	resp, err := c.Get("http://" + l.Admin + "/debug/pprof/goroutine?debug=1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ address = "127.0.0.1:0"
 		"/metrics": `proxy_backend_healthy{backend="127.0.0.1:1"}`,
 		"/status":  `"address": "127.0.0.1:1"`,
 	} {
-		resp, err := c.Get("http://" + l.admin + path)
+		resp, err := c.Get("http://" + l.Admin + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -472,16 +472,16 @@ address = "127.0.0.1:0"
 		}
 	}
 	c.CloseIdleConnections()
-	cancel()
+	sigs <- syscall.SIGTERM
 	select {
 	case err := <-errc:
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("run did not return after cancel")
+		t.Fatal("run did not return after SIGTERM")
 	}
-	if _, err := net.DialTimeout("tcp", l.admin, time.Second); err == nil {
+	if _, err := net.DialTimeout("tcp", l.Admin, time.Second); err == nil {
 		t.Fatal("admin listener still open after run returned")
 	}
 }

@@ -1,0 +1,134 @@
+# The Phase 9 benchmark against nginx (bench/phase9/bench.sh runs it).
+#
+#   origin1, origin2   nginx serving /1k and /100k, plain HTTP on
+#                      127.0.0.1:8081 and :8082
+#   proxy | nginx      the device under test on 127.0.0.1:8443, one at a
+#                      time (compose profiles "proxy" and "nginx"), with the
+#                      same certificate, the same CPUs and the same address
+#   loadgen            wrk-noresume, wrk2 and openssl, resolving
+#                      default.test to 127.0.0.1
+#
+# Every container uses the host's network (Docker Desktop's VM), so traffic
+# goes over loopback. On Docker's bridge, the veth pairs' softirq work on
+# busy CPUs delayed packets past TCP's retransmission timeout: spurious
+# retransmissions and p99s from 60 ms to 2.7 s at 70% load, varying run to
+# run, for both devices (docs/DESIGN.md, Phase 9). Loopback has none of
+# that path and is how one machine would run it with taskset.
+#
+# Each part has its own CPUs (cpuset, Docker's taskset). The defaults suit
+# the 22-vCPU machine the results come from: vCPUs 0-1 are left to the
+# system; the device under test gets one vCPU on each of four cores
+# (2,4,6,8; WSL2 shows vCPU pairs 0-1, 2-3, ... as a core's two threads)
+# with the other four left idle so nothing shares its cores; the origins a
+# core each; the load generator four cores. BENCH_*_CPUS override them; the
+# device under test must keep four vCPUs, since nginx's worker_processes is
+# four (bench.sh checks the proxy's GOMAXPROCS and nginx's workers agree).
+name: tlsbench
+
+x-dut: &dut
+  network_mode: host
+  cpuset: "${BENCH_DUT_CPUS:-2,4,6,8}"
+  ulimits:
+    nofile: {soft: 65536, hard: 65536}
+  depends_on:
+    origin1: {condition: service_healthy}
+    origin2: {condition: service_healthy}
+
+x-origin: &origin
+  image: nginx:1.30.6-alpine
+  network_mode: host
+  ulimits:
+    nofile: {soft: 65536, hard: 65536}
+
+# The two files are made at start, so nothing binary is committed.
+x-origin-start: &origin-start >-
+  mkdir -p /srv &&
+  head -c 1024 /dev/zero | tr '\0' 'a' >/srv/1k &&
+  head -c 102400 /dev/zero | tr '\0' 'b' >/srv/100k &&
+  sed "s/@PORT@/$$PORT/" /etc/nginx/origin.conf >/tmp/nginx.conf &&
+  exec nginx -c /tmp/nginx.conf -g 'daemon off;'
+
+services:
+  origin1:
+    <<: *origin
+    cpuset: "${BENCH_ORIGIN1_CPUS:-10,11}"
+    environment: {PORT: "8081"}
+    command: ["sh", "-c", *origin-start]
+    volumes:
+      - ./origin.conf:/etc/nginx/origin.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/1k"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+
+  origin2:
+    <<: *origin
+    cpuset: "${BENCH_ORIGIN2_CPUS:-12,13}"
+    environment: {PORT: "8082"}
+    command: ["sh", "-c", *origin-start]
+    volumes:
+      - ./origin.conf:/etc/nginx/origin.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/1k"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+
+  proxy:
+    <<: *dut
+    profiles: ["proxy"]
+    # bench/phase9/hotspots.sh runs an image of an earlier commit here.
+    image: ${BENCH_PROXY_IMAGE:-tlslab/proxy:dev}
+    build:
+      context: ../../..
+      dockerfile: lab/Dockerfile
+      target: proxy
+    user: "${LAB_UID:-10001}:${LAB_GID:-10001}"
+    # GOGC and GOMEMLIMIT come from bench/phase9/gc.sh; unset, the
+    # runtime's defaults apply.
+    environment:
+      GOMAXPROCS: "4"
+      GOGC: "${GOGC:-}"
+      GOMEMLIMIT: "${GOMEMLIMIT:-}"
+    # Access log to /dev/null, as nginx's: every line is still formatted,
+    # buffered and written.
+    entrypoint: ["/bin/sh", "-c", "exec /usr/local/bin/proxy -config /etc/proxy/proxy.toml >/dev/null"]
+    volumes:
+      # proxy-profile.toml (hotspots.sh's profiles) adds the mutex profile.
+      - ${BENCH_PROXY_CONFIG:-./proxy.toml}:/etc/proxy/proxy.toml:ro
+      - ../../../lab/certs:/etc/proxy/certs:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1:8443/healthz"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+
+  nginx:
+    <<: *dut
+    profiles: ["nginx"]
+    image: nginx:1.30.6-alpine
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ../../../lab/certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://127.0.0.1:8443/healthz"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+
+  loadgen:
+    image: tlslab/loadgen:dev
+    build:
+      context: ../../..
+      dockerfile: lab/Dockerfile
+      target: loadgen
+    network_mode: host
+    init: true
+    cpuset: "${BENCH_LOADGEN_CPUS:-14-21}"
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    extra_hosts:
+      - "default.test:127.0.0.1"
+    volumes:
+      - ../../../lab/certs/ca.crt:/work/ca.crt:ro

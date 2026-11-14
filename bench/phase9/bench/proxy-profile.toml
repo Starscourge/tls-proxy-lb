@@ -1,0 +1,41 @@
+# proxy.toml with the mutex profile on (one contention event in ten
+# sampled), for bench/phase9/hotspots.sh's profiling pass only: the
+# measured runs use proxy.toml.
+default_pool = "origin"
+
+[[listener]]
+address = "127.0.0.1:8443"
+
+# Unknown SNI (default.test has no route) gets this certificate and the
+# default pool, as nginx's default_server does.
+[tls]
+default_cert = "certs/default.test.crt"
+default_key  = "certs/default.test.key"
+
+[pool.origin]
+algorithm = "round_robin"
+backends  = [
+  { address = "127.0.0.1:8081" },
+  { address = "127.0.0.1:8082" },
+]
+
+# nginx: keepalive 64 idle connections per worker, 4 workers, 256 in all;
+# here 128 per backend address, 256 in all.
+[upstream]
+max_idle_per_backend = 128
+
+# No cap on requests per client connection (nginx: keepalive_requests
+# 10000000). With the default 1,000 both close each connection every
+# thousand requests, and wrk2 counts the reconnect as seconds of latency
+# for every request queued behind it; the new-connection scenario measures
+# connection set-up on its own. nginx: keepalive_timeout 60s.
+[limits]
+max_conns             = 20000
+max_requests_per_conn = 0
+
+[timeouts]
+idle_ms = 60000
+
+[admin]
+address = "127.0.0.1:9901"
+mutex_profile_fraction = 10

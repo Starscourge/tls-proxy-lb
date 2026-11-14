@@ -78,7 +78,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
           warm "$d" "$c" "$sc" "$GAP_S"
           lat "$d" "$c" "$sc" "$rate" "$dir/lat-$i"
           check_opens "$sc" "$dir/lat-$i"
-          echo "   $sc c$c $d latency run $i at $rate req/s: $(awk '/^ 99.000%/ { print $2 }' "$dir/lat-$i.txt") p99"
+          echo "   $sc c$c $d latency run $i at $rate req/s: $(p99 "$dir/lat-$i.txt") p99"
         done
       done
     done

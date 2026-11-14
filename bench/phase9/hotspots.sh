@@ -55,7 +55,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
     mkdir -p "$out/$label"
     dut_up proxy BENCH_PROXY_IMAGE="${image[$label]}" BENCH_PROXY_CONFIG=./proxy-profile.toml
     warm proxy "$c" "$sc" "$WARM_S"
-    lg wrk-noresume -t"$threads" -c"$c" -d40s "$url_base/1k" >"$out/$label/profile-wrk.txt" 2>&1 &
+    fan wrk-noresume "$c" 0 -d40s "$url_base/1k" >"$out/$label/profile-wrk.txt" 2>&1 &
     w=$!
     sleep 5
     pprof "$label" cpu "profile?seconds=30" &
@@ -86,7 +86,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
     for i in $(seq "$RUNS"); do
       warm proxy "$c" "$sc" "$GAP_S"
       lat proxy "$c" "$sc" "$rate" "$dir/lat-$i"
-      echo "   latency run $i at $rate req/s: $(awk '/^ 99.000%/ { print $2 }' "$dir/lat-$i.txt") p99"
+      echo "   latency run $i at $rate req/s: $(p99 "$dir/lat-$i.txt") p99"
     done
   done
   clock_end

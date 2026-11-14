@@ -4,7 +4,32 @@
 
 bc=(docker compose -f "$root/bench/phase9/bench/compose.yml")
 url_base="https://default.test:8443"
-threads="${THREADS:-8}"
+# The load generator runs LOADGEN_PROCS single-thread wrk or wrk2
+# processes side by side, one per CPU of its cpuset, the connections and
+# the rate split evenly between them (fan_sh). One wrk with eight threads
+# shares one OpenSSL, whose locks made each full handshake cost 3.9 ms of
+# CPU against 0.66 ms in a process of its own: it could not open
+# connections fast enough to load either device.
+procs="${LOADGEN_PROCS:-8}"
+# fan_sh N TOOL CONNS RATE ARGS...: run in the load generator; RATE 0 for
+# wrk. Prints each process's output under "==== process I of N", which
+# bench/phase9/plot reads as one run; fails if any process failed.
+fan_sh='n=$1 tool=$2 c=$3 r=$4; shift 4
+d=$(mktemp -d)
+pids=()
+for ((i = 0; i < n; i++)); do
+  a=(-t1 -c$((c / n + (i < c % n))))
+  ((r > 0)) && a+=(-R$((r / n + (i < r % n))))
+  "$tool" "${a[@]}" "$@" >"$d/$i" 2>&1 &
+  pids+=($!)
+done
+st=0
+for p in "${pids[@]}"; do wait "$p" || st=1; done
+for ((i = 0; i < n; i++)); do echo "==== process $((i + 1)) of $n"; cat "$d/$i"; done
+rm -rf "$d"
+exit $st'
+# fan TOOL CONNS RATE ARGS...: fan_sh in the load generator, LOADGEN_PROCS wide.
+fan() { lg bash -c "$fan_sh" fan "$procs" "$@"; }
 # The device under test's admin listener, inside its container.
 admin="http://127.0.0.1:9901"
 
@@ -144,7 +169,7 @@ warm() {
   local path args
   path="$(scenario_path "$3")"
   mapfile -t args < <(scenario_args "$3")
-  lg wrk-noresume -t"$threads" -c"$2" -d"$4s" "${args[@]}" "$url_base$path" >/dev/null 2>&1
+  fan wrk-noresume "$2" 0 -d"$4s" "${args[@]}" "$url_base$path" >/dev/null 2>&1
 }
 
 # tput DUT CONNS SCENARIO FILE: wrk at full speed for TPUT_S seconds.
@@ -154,7 +179,7 @@ tput() {
   local path args
   path="$(scenario_path "$3")"
   mapfile -t args < <(scenario_args "$3")
-  measure "$1" "$4" wrk-noresume -t"$threads" -c"$2" -d"${TPUT_S:-15}s" --timeout 10s --latency "${args[@]}" "$url_base$path"
+  measure "$1" "$4" bash -c "$fan_sh" fan "$procs" wrk-noresume "$2" 0 -d"${TPUT_S:-15}s" --timeout 10s --latency "${args[@]}" "$url_base$path"
 }
 
 # lat DUT CONNS SCENARIO RATE FILE: wrk2 at a constant RATE for LAT_S
@@ -164,7 +189,7 @@ lat() {
   local path args
   path="$(scenario_path "$3")"
   mapfile -t args < <(scenario_args "$3")
-  measure "$1" "$5" wrk2 -t"$threads" -c"$2" -d"${LAT_S:-40}s" -R"$4" --timeout 10s --latency "${args[@]}" "$url_base$path"
+  measure "$1" "$5" bash -c "$fan_sh" fan "$procs" wrk2 "$2" "$4" -d"${LAT_S:-40}s" --timeout 10s --latency "${args[@]}" "$url_base$path"
   echo "rate=$4" >>"$5.meta"
 }
 
@@ -177,7 +202,7 @@ tcp_opens() { lg awk '/^Tcp:/ && $7 ~ /^[0-9]+$/ { print $7 }' /proc/net/snmp; }
 check_opens() {
   [[ $1 == new-* ]] || return 0
   local reqs opens
-  reqs=$(awk '/ requests in / { print $1 }' "$2.txt")
+  reqs=$(awk '/ requests in / { n += $1 } END { print n }' "$2.txt")
   opens=$(sed -n 's/^tcp_opens=//p' "$2.meta")
   if ((opens * 10 < reqs * 9)); then
     echo "$2: $opens connections for $reqs requests; $1 should open one per request" >&2
@@ -185,8 +210,10 @@ check_opens() {
   fi
 }
 
-# rps FILE.txt: wrk's Requests/sec.
-rps() { awk '/^Requests\/sec:/ { print int($2) }' "$1"; }
+# rps FILE.txt, p99 FILE.txt: a run's requests per second, summed over
+# its processes, and its p99 from their merged spectra.
+rps() { plot wrk "$1" | awk '{ print $1 }'; }
+p99() { plot wrk "$1" | awk '{ print $2 "ms" }'; }
 
 # median: the median of the numbers on stdin (the lower one of an even count).
 median() { sort -g | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }'; }
@@ -205,5 +232,5 @@ env_info() {
   echo "loadgen:     wrk $(sed -n 's/^ARG WRK_VERSION=//p' "$root/lab/Dockerfile") and wrk2 $(sed -n 's/^ARG WRK2_COMMIT=//p' "$root/lab/Dockerfile" | cut -c1-12), both never resuming TLS sessions; $(lg sh -c 'apk info -v 2>/dev/null | grep -E "^libssl3-"')"
   echo "network:     host (loopback in Docker Desktop's VM)"
   echo "cpusets:     device under test ${BENCH_DUT_CPUS:-2,4,6,8}; origins ${BENCH_ORIGIN1_CPUS:-10,11} and ${BENCH_ORIGIN2_CPUS:-12,13}; load generator ${BENCH_LOADGEN_CPUS:-14-21}"
-  echo "wrk threads: $threads"
+  echo "load:        $procs single-thread wrk or wrk2 processes side by side, connections and rate split evenly"
 }

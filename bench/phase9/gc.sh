@@ -65,7 +65,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
     for i in $(seq "$RUNS"); do
       warm proxy "$c" "$sc" "$GAP_S"
       lat proxy "$c" "$sc" "$rate" "$dir/lat-$i"
-      echo "   latency run $i at $rate req/s: $(awk '/^ 99.000%/ { print $2 }' "$dir/lat-$i.txt") p99"
+      echo "   latency run $i at $rate req/s: $(p99 "$dir/lat-$i.txt") p99"
     done
   done
   clock_end

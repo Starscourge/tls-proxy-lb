@@ -115,11 +115,16 @@ type Timeouts struct {
 	// request byte is sent, and any stall while writing the request to or
 	// reading the response from the backend.
 	UpstreamResponse time.Duration
+	// Shutdown is how long open connections may take to finish after
+	// SIGTERM before the rest are closed. Zero closes them at once. The
+	// value in force is the current snapshot's when the signal arrives.
+	Shutdown time.Duration
 }
 
 // DefaultTimeouts returns the defaults from PLAN.md's config sketch, with
-// ClientIO matching nginx's client_body_timeout and send_timeout, and
-// Handshake equal to HeaderRead.
+// ClientIO matching nginx's client_body_timeout and send_timeout,
+// Handshake equal to HeaderRead, and Shutdown short enough that the drain
+// and teardown finish inside docker stop's 10-second grace period.
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
 		Handshake:        5 * time.Second,
@@ -128,11 +133,16 @@ func DefaultTimeouts() Timeouts {
 		ClientIO:         60 * time.Second,
 		UpstreamConnect:  1 * time.Second,
 		UpstreamResponse: 10 * time.Second,
+		Shutdown:         8 * time.Second,
 	}
 }
 
-// Validate reports the first timeout that is not positive.
+// Validate reports the first timeout that is not positive, or a negative
+// Shutdown.
 func (t Timeouts) Validate() error {
+	if t.Shutdown < 0 {
+		return fmt.Errorf("timeout Shutdown must not be negative, got %v", t.Shutdown)
+	}
 	for _, f := range []struct {
 		name string
 		d    time.Duration

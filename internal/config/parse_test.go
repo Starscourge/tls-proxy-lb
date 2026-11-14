@@ -73,6 +73,7 @@ upstream_connect_ms  = 300
 upstream_response_ms = 4000
 idle_ms              = 30000
 client_io_ms         = 15000
+shutdown_ms          = 0
 
 [limits]
 max_conns        = 500
@@ -140,6 +141,7 @@ func TestParseFull(t *testing.T) {
 			ClientIO:         15 * time.Second,
 			UpstreamConnect:  300 * time.Millisecond,
 			UpstreamResponse: 4 * time.Second,
+			Shutdown:         0,
 		},
 		Limits:    Limits{MaxConns: 500, MaxHeaderBytes: 8192, MaxConnsPerIP: 50},
 		RateLimit: RateLimit{Default: ratelimit.Limit{Rate: 0.5, Burst: 3}, MaxEntries: 2560, Sweep: 500 * time.Millisecond},
@@ -296,6 +298,7 @@ func TestParseRejects(t *testing.T) {
 		{"timeout huge", base + route + pool + "[timeouts]\nupstream_response_ms = 86400001\n", "timeouts.upstream_response_ms: must be from 1"},
 		{"max_conns zero", base + route + pool + "[limits]\nmax_conns = 0\n", "limits.max_conns: must be from 1 to 10000000, got 0"},
 		{"max_header_bytes huge", base + route + pool + "[limits]\nmax_header_bytes = 1073741824\n", "limits.max_header_bytes: must be from 1 to 16777216"},
+		{"shutdown negative", base + route + pool + "[timeouts]\nshutdown_ms = -1\n", "timeouts.shutdown_ms: must be from 0 to 86400000 milliseconds, got -1"},
 		{"handshake zero", base + route + pool + "[timeouts]\nhandshake_ms = 0\n", "timeouts.handshake_ms: must be from 1"},
 		{"max_idle negative", base + route + pool + "[upstream]\nmax_idle_per_backend = -1\n", "upstream.max_idle_per_backend: must be from 0 to 100000, got -1"},
 		{"upstream idle zero", base + route + pool + "[upstream]\nidle_timeout_ms = 0\n", "upstream.idle_timeout_ms: must be from 1 to 86400000 milliseconds, got 0"},
@@ -455,5 +458,14 @@ func TestTimeoutsValidate(t *testing.T) {
 	to.ClientIO = 0
 	if err := to.Validate(); err == nil || !strings.Contains(err.Error(), "ClientIO") {
 		t.Fatalf("got %v", err)
+	}
+	to = DefaultTimeouts()
+	to.Shutdown = 0
+	if err := to.Validate(); err != nil {
+		t.Fatalf("zero shutdown: %v", err)
+	}
+	to.Shutdown = -time.Second
+	if err := to.Validate(); err == nil || !strings.Contains(err.Error(), "Shutdown") {
+		t.Fatalf("negative shutdown: got %v", err)
 	}
 }

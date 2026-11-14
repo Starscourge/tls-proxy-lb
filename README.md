@@ -142,6 +142,7 @@ idle_ms              = 60000
 client_io_ms         = 60000    # longest stall on a client body or response
 upstream_connect_ms  = 1000
 upstream_response_ms = 10000
+shutdown_ms          = 8000     # SIGTERM drain before closing the rest; 0 = none
 
 [limits]                        # optional; defaults shown
 max_conns        = 10000

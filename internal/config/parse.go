@@ -114,6 +114,7 @@ type fileTimeouts struct {
 	ClientIOMS         int64 `toml:"client_io_ms"`
 	UpstreamConnectMS  int64 `toml:"upstream_connect_ms"`
 	UpstreamResponseMS int64 `toml:"upstream_response_ms"`
+	ShutdownMS         int64 `toml:"shutdown_ms"`
 }
 
 type fileLimits struct {
@@ -468,6 +469,14 @@ func (v *validator) timeouts(ft *fileTimeouts) Timeouts {
 			continue
 		}
 		*f.dst = time.Duration(f.ms) * time.Millisecond
+	}
+	// Zero is allowed here: shut down without a drain.
+	if v.md.IsDefined("timeouts", "shutdown_ms") {
+		if ms := ft.ShutdownMS; ms < 0 || ms > maxTimeoutMS {
+			v.errorf("timeouts.shutdown_ms", "must be from 0 to %d milliseconds, got %d", maxTimeoutMS, ms)
+		} else {
+			t.Shutdown = time.Duration(ms) * time.Millisecond
+		}
 	}
 	return t
 }

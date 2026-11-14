@@ -76,6 +76,8 @@ upstream_connect_ms  = 1000
 upstream_response_ms = 10000
 idle_ms              = 60000
 client_io_ms         = 60000
+# How long SIGTERM waits for open requests; inside docker stop's 10 s.
+shutdown_ms          = 8000
 
 # Health checks: active checks every second, and passive ejection after
 # three failures in a row in live traffic, for five seconds.

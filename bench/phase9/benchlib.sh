@@ -8,8 +8,9 @@ threads="${THREADS:-8}"
 # The device under test's admin listener, inside its container.
 admin="http://127.0.0.1:9901"
 
-# scenario_path NAME, scenario_args NAME: the URL path and extra wrk
-# arguments of a scenario.
+# scenario_path NAME, scenario_args NAME: the URL path and the extra wrk
+# arguments of a scenario, one per line. wrk keeps a -H header only when
+# a space follows the colon; "Connection:close" is dropped without a word.
 scenario_path() {
   case "$1" in
   ka-1k | new-1k) echo /1k ;;
@@ -19,8 +20,8 @@ scenario_path() {
 }
 scenario_args() {
   case "$1" in
-  new-1k) echo "-H Connection:close" ;;
-  *) echo "" ;;
+  new-1k) printf '%s\n' -H "Connection: close" ;;
+  *) ;;
   esac
 }
 
@@ -108,11 +109,13 @@ check_duts() {
 
 # measure DUT FILE CMD...: run CMD in the load generator, its output to
 # FILE.txt, with the device under test's CPU, peak memory and (proxy) GC
-# CPU across it in FILE.meta.
+# CPU across it in FILE.meta, and the TCP connections accepted on the
+# machine meanwhile (every container shares the host's network namespace).
 measure() {
   local dut=$1 file=$2
   shift 2
-  local c0 c1 g0 g1 t0 t1
+  local c0 c1 g0 g1 t0 t1 o0 o1
+  o0=$(tcp_opens)
   c0=($(cgroup "$dut"))
   g0=($(gc_cpu "$dut"))
   t0=$(now_ms)
@@ -120,8 +123,10 @@ measure() {
   t1=$(now_ms)
   c1=($(cgroup "$dut"))
   g1=($(gc_cpu "$dut"))
+  o1=$(tcp_opens)
   {
     echo "wall_ms=$((t1 - t0))"
+    echo "tcp_opens=$((o1 - o0))"
     echo "cpu_usec=$((c1[0] - c0[0]))"
     echo "mem_peak_bytes=${c1[1]}"
     if [[ ${#g1[@]} -eq 2 ]]; then
@@ -138,8 +143,8 @@ measure() {
 warm() {
   local path args
   path="$(scenario_path "$3")"
-  args="$(scenario_args "$3")"
-  lg wrk-noresume -t"$threads" -c"$2" -d"$4s" $args "$url_base$path" >/dev/null 2>&1
+  mapfile -t args < <(scenario_args "$3")
+  lg wrk-noresume -t"$threads" -c"$2" -d"$4s" "${args[@]}" "$url_base$path" >/dev/null 2>&1
 }
 
 # tput DUT CONNS SCENARIO FILE: wrk at full speed for TPUT_S seconds.
@@ -148,8 +153,8 @@ warm() {
 tput() {
   local path args
   path="$(scenario_path "$3")"
-  args="$(scenario_args "$3")"
-  measure "$1" "$4" wrk-noresume -t"$threads" -c"$2" -d"${TPUT_S:-15}s" --timeout 10s --latency $args "$url_base$path"
+  mapfile -t args < <(scenario_args "$3")
+  measure "$1" "$4" wrk-noresume -t"$threads" -c"$2" -d"${TPUT_S:-15}s" --timeout 10s --latency "${args[@]}" "$url_base$path"
 }
 
 # lat DUT CONNS SCENARIO RATE FILE: wrk2 at a constant RATE for LAT_S
@@ -158,9 +163,26 @@ tput() {
 lat() {
   local path args
   path="$(scenario_path "$3")"
-  args="$(scenario_args "$3")"
-  measure "$1" "$5" wrk2 -t"$threads" -c"$2" -d"${LAT_S:-40}s" -R"$4" --timeout 10s --latency $args "$url_base$path"
+  mapfile -t args < <(scenario_args "$3")
+  measure "$1" "$5" wrk2 -t"$threads" -c"$2" -d"${LAT_S:-40}s" -R"$4" --timeout 10s --latency "${args[@]}" "$url_base$path"
   echo "rate=$4" >>"$5.meta"
+}
+
+# tcp_opens: the TCP connections accepted on the host so far
+# (PassiveOpens in /proc/net/snmp).
+tcp_opens() { lg awk '/^Tcp:/ && $7 ~ /^[0-9]+$/ { print $7 }' /proc/net/snmp; }
+
+# check_opens SCENARIO FILE: a new-connection run must have opened a
+# connection per request; anything less means it fell back to keep-alive.
+check_opens() {
+  [[ $1 == new-* ]] || return 0
+  local reqs opens
+  reqs=$(awk '/ requests in / { print $1 }' "$2.txt")
+  opens=$(sed -n 's/^tcp_opens=//p' "$2.meta")
+  if ((opens * 10 < reqs * 9)); then
+    echo "$2: $opens connections for $reqs requests; $1 should open one per request" >&2
+    return 1
+  fi
 }
 
 # rps FILE.txt: wrk's Requests/sec.

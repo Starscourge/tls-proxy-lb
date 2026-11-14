@@ -69,6 +69,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
         for i in $(seq "$RUNS"); do
           warm "$d" "$c" "$sc" "$GAP_S"
           tput "$d" "$c" "$sc" "$dir/tput-$i"
+          check_opens "$sc" "$dir/tput-$i"
           echo "   $sc c$c $d throughput run $i: $(rps "$dir/tput-$i.txt") req/s"
         done
         max=$(for i in $(seq "$RUNS"); do rps "$dir/tput-$i.txt"; done | median)
@@ -76,6 +77,7 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
         for i in $(seq "$RUNS"); do
           warm "$d" "$c" "$sc" "$GAP_S"
           lat "$d" "$c" "$sc" "$rate" "$dir/lat-$i"
+          check_opens "$sc" "$dir/lat-$i"
           echo "   $sc c$c $d latency run $i at $rate req/s: $(awk '/^ 99.000%/ { print $2 }' "$dir/lat-$i.txt") p99"
         done
       done

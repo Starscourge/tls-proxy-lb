@@ -13,6 +13,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -260,4 +261,23 @@ func TestRetain(t *testing.T) {
 	if m.Backend("web", "10.0.0.2:80").Codes.Get(200) != 0 {
 		t.Fatal("a returning backend kept its old counts")
 	}
+}
+
+func TestHardeningCounters(t *testing.T) {
+	m := New(Sources{})
+	m.BadRequest(httpx.ReasonCLAndTE)
+	m.BadRequest(httpx.ReasonCLAndTE)
+	m.BadRequest(httpx.ReasonBareLF)
+	m.Panic()
+	m.AcceptError()
+	m.AcceptError()
+	want(t, m, "proxy_bad_requests_total", map[string]string{"reason": "cl_and_te"}, 2)
+	want(t, m, "proxy_bad_requests_total", map[string]string{"reason": "bare_lf"}, 1)
+	want(t, m, "proxy_bad_requests_total", map[string]string{"reason": "malformed"}, 0)
+	want(t, m, "proxy_panics_total", nil, 1)
+	want(t, m, "proxy_accept_errors_total", nil, 2)
+	var nilM *Metrics
+	nilM.BadRequest(httpx.ReasonMalformed)
+	nilM.Panic()
+	nilM.AcceptError()
 }

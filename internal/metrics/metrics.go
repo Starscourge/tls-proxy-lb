@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -152,6 +153,10 @@ type Metrics struct {
 
 	unrouted Codes
 
+	badRequests [httpx.NumReasons]atomic.Uint64
+	panics      atomic.Uint64
+	acceptErrs  atomic.Uint64
+
 	// reloads counts config reloads by outcome: [0] failed, [1] applied.
 	reloads      [2]atomic.Uint64
 	lastReloadOK atomic.Bool
@@ -233,6 +238,39 @@ func (m *Metrics) RateLimited(route string) *atomic.Uint64 {
 	}
 	return c
 }
+
+// BadRequest counts a request refused for r. A nil Metrics counts
+// nothing.
+func (m *Metrics) BadRequest(r httpx.Reason) {
+	if m != nil && r < httpx.NumReasons {
+		m.badRequests[r].Add(1)
+	}
+}
+
+// BadRequests returns how many requests were refused for r.
+func (m *Metrics) BadRequests(r httpx.Reason) uint64 { return m.badRequests[r].Load() }
+
+// Panic counts a panic recovered in a connection goroutine. A nil Metrics
+// counts nothing.
+func (m *Metrics) Panic() {
+	if m != nil {
+		m.panics.Add(1)
+	}
+}
+
+// Panics returns how many panics were recovered.
+func (m *Metrics) Panics() uint64 { return m.panics.Load() }
+
+// AcceptError counts an Accept that failed with an error other than a
+// closed listener. A nil Metrics counts nothing.
+func (m *Metrics) AcceptError() {
+	if m != nil {
+		m.acceptErrs.Add(1)
+	}
+}
+
+// AcceptErrors returns how many Accepts failed.
+func (m *Metrics) AcceptErrors() uint64 { return m.acceptErrs.Load() }
 
 // Reload records the outcome of a config reload.
 func (m *Metrics) Reload(ok bool) {
@@ -346,6 +384,13 @@ var (
 	descReloads = prometheus.NewDesc("proxy_config_reloads_total",
 		"Config reloads on SIGHUP, by result: success (applied) or failure (the old config kept serving).",
 		[]string{"result"}, nil)
+	descBadRequests = prometheus.NewDesc("proxy_bad_requests_total",
+		"Requests refused before forwarding because their framing or headers were ambiguous, malformed or over a limit, by reason.",
+		[]string{"reason"}, nil)
+	descPanics = prometheus.NewDesc("proxy_panics_total",
+		"Panics recovered in a connection goroutine; each closed its connection and left the process running.", nil, nil)
+	descAcceptErrors = prometheus.NewDesc("proxy_accept_errors_total",
+		"Accepts that failed, out of file descriptors for example, each followed by a backoff.", nil, nil)
 	descLastReloadOK = prometheus.NewDesc("proxy_config_last_reload_successful",
 		"1 if the last config reload was applied, or none has been tried; 0 if it failed.", nil, nil)
 )
@@ -374,6 +419,11 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 		lastOK = 1
 	}
 	gauge(descLastReloadOK, lastOK)
+	for r := httpx.ReasonNone + 1; r < httpx.NumReasons; r++ {
+		counter(descBadRequests, m.badRequests[r].Load(), r.String())
+	}
+	counter(descPanics, m.panics.Load())
+	counter(descAcceptErrors, m.acceptErrs.Load())
 	m.mu.Lock()
 	names := make([]string, 0, len(m.pools))
 	for name := range m.pools {

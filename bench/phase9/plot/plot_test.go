@@ -324,6 +324,21 @@ func TestAnalyseSlow(t *testing.T) {
 	}
 	checkSVG(t, SlowFigure([]SlowRun{rr, ej}, "netem delay", "b2").SVG())
 
+	// An ejection that runs out with the fault still on: back during the
+	// fault, then out again; the out-of-rotation window ends at the first
+	// return, and the summary counts both times out.
+	cyc := []HealthEvent{{12000, "backend ejected", "addr2"}, {15000, "backend healthy", "addr2"}, {17000, "backend ejected", "addr2"}, {22000, "backend healthy", "addr2"}}
+	again, _ := AnalyseSlow("again", reqs, ev, cyc, "addr2")
+	if again.Eject != 12000 || again.Readmit != 15000 || again.Ejections != 2 || again.DuringEjected.Requests != 300 {
+		t.Fatalf("cycles: eject %d readmit %d times %d window %d", again.Eject, again.Readmit, again.Ejections, again.DuringEjected.Requests)
+	}
+	out.Reset()
+	WriteSlow(&out, []SlowRun{again}, "b2")
+	if want := "out 2000 ms after the fault (backend ejected), back 3000 ms later with the fault still on; out 2 times in all while the fault was on"; !strings.Contains(out.String(), want) {
+		t.Errorf("summary lacks %q:\n%s", want, out.String())
+	}
+	checkSVG(t, SlowFigure([]SlowRun{again}, "netem loss", "b2").SVG())
+
 	// An ejection after the fault cleared is not one the fault caused.
 	health[0].MS = 20500
 	late, _ := AnalyseSlow("x", reqs, ev, health, "addr2")

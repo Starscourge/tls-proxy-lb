@@ -18,10 +18,11 @@ type SlowRun struct {
 	Fault, Clear  int64
 	Eject         int64 // 0: never left rotation during the fault
 	EjectMsg      string
-	Readmit       int64 // 0: not left, or never came back
+	Readmit       int64 // the first time back after Eject; 0: not left, or never came back
+	Ejections     int   // times it left rotation during the fault
 	Before        Window
 	During        Window // [fault, clear)
-	DuringEjected Window // [eject, clear), when it was ejected
+	DuringEjected Window // [eject, min(readmit, clear)): out of rotation, the fault on
 	After         Window // [clear, end]
 }
 
@@ -40,18 +41,36 @@ func AnalyseSlow(name string, reqs []Request, ev map[string]int64, health []Heal
 	if r.Clear, ok = ev["clear"]; !ok {
 		return r, fmt.Errorf("%s: events: no clear", name)
 	}
-	if e, ok := FirstHealth(health, victim, r.Fault, "backend ejected", "backend unhealthy"); ok && e.MS < r.Clear {
-		r.Eject, r.EjectMsg = e.MS, e.Msg
-		if h, ok := FirstHealth(health, victim, r.Clear, "backend healthy"); ok {
-			r.Readmit = h.MS
+	// An ejection that runs out while the fault is still on can end in
+	// re-admission, and another ejection, before the fault clears.
+	for from := r.Fault; ; {
+		e, ok := FirstHealth(health, victim, from, "backend ejected", "backend unhealthy")
+		if !ok || e.MS >= r.Clear {
+			break
 		}
+		r.Ejections++
+		h, back := FirstHealth(health, victim, e.MS+1, "backend healthy")
+		if r.Eject == 0 {
+			r.Eject, r.EjectMsg = e.MS, e.Msg
+			if back {
+				r.Readmit = h.MS
+			}
+		}
+		if !back {
+			break
+		}
+		from = h.MS + 1
 	}
 	end := reqs[len(reqs)-1].StartMS + 1
 	thr := []float64{100, 1000}
 	r.Before = Summarise(reqs, r.T0+warmupMS, r.Fault, thr...)
 	r.During = Summarise(reqs, r.Fault, r.Clear, thr...)
 	if r.Eject != 0 {
-		r.DuringEjected = Summarise(reqs, r.Eject, r.Clear, thr...)
+		out := r.Clear
+		if r.Readmit != 0 {
+			out = min(out, r.Readmit)
+		}
+		r.DuringEjected = Summarise(reqs, r.Eject, out, thr...)
 	}
 	r.After = Summarise(reqs, r.Clear, end, thr...)
 	return r, nil
@@ -78,7 +97,7 @@ func WriteSlow(w io.Writer, runs []SlowRun, name string) {
 			rows = append(rows, struct {
 				n string
 				w Window
-			}{"fault on, ejected", r.DuringEjected})
+			}{"fault on, out", r.DuringEjected})
 		}
 		rows = append(rows, struct {
 			n string
@@ -94,13 +113,30 @@ func WriteSlow(w io.Writer, runs []SlowRun, name string) {
 		switch {
 		case r.Eject == 0:
 			fmt.Fprintf(w, "%-10s %s stayed in rotation\n", r.Name, name)
-		case r.Readmit == 0:
-			fmt.Fprintf(w, "%-10s %s out %d ms after the fault (%s), not back by the end\n", r.Name, name, r.Eject-r.Fault, r.EjectMsg)
 		default:
-			fmt.Fprintf(w, "%-10s %s out %d ms after the fault (%s), back %d ms after it cleared\n", r.Name, name, r.Eject-r.Fault, r.EjectMsg, r.Readmit-r.Clear)
+			fmt.Fprintf(w, "%-10s %s out %d ms after the fault (%s), %s%s\n", r.Name, name, r.Eject-r.Fault, r.EjectMsg, r.readmitText(), r.againText())
 		}
 	}
 	fmt.Fprintf(w, "\n(the first %d s of each run, k6 starting up, are left out of \"before the fault\")\n", warmupMS/1000)
+}
+
+// readmitText says when the backend came back after its first ejection.
+func (r SlowRun) readmitText() string {
+	switch {
+	case r.Readmit == 0:
+		return "not back by the end"
+	case r.Readmit < r.Clear:
+		return fmt.Sprintf("back %d ms later with the fault still on", r.Readmit-r.Eject)
+	default:
+		return fmt.Sprintf("back %d ms after it cleared", r.Readmit-r.Clear)
+	}
+}
+
+func (r SlowRun) againText() string {
+	if r.Ejections < 2 {
+		return ""
+	}
+	return fmt.Sprintf("; out %d times in all while the fault was on", r.Ejections)
 }
 
 // SlowFigure draws p99 per second for every run, then each run's
@@ -135,7 +171,11 @@ func SlowFigure(runs []SlowRun, fault, name string) Figure {
 		if r.Eject != 0 {
 			marks = append(marks, VMark{x(r.Eject), fmt.Sprintf("%s ejected +%d ms", name, r.Eject-r.Fault)})
 			if r.Readmit != 0 {
-				marks = append(marks, VMark{x(r.Readmit), fmt.Sprintf("re-admitted +%d ms", r.Readmit-r.Clear)})
+				l := fmt.Sprintf("re-admitted +%d ms", r.Readmit-r.Clear)
+				if r.Readmit < r.Clear {
+					l = "re-admitted, fault on"
+				}
+				marks = append(marks, VMark{x(r.Readmit), l})
 			}
 		}
 		panels = append(panels, LineChart{

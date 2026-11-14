@@ -245,11 +245,11 @@ func TestMillionKeysMemory(t *testing.T) {
 	const (
 		capEntries = 100_000
 		keys       = 1_000_000
-		// maxBytesPerEntry is the budget per bucket at the cap. A slot is
-		// 40 bytes (20-byte key padded to 24, 16-byte bucket) plus a
-		// control byte; under eviction churn the deleted-slot markers
-		// keep a Swiss-table map at about 2.5 slots per live entry, which
-		// measures 126 bytes.
+		// maxBytesPerEntry is the budget per bucket at the cap. A map
+		// slot is 32 bytes (20-byte key padded to 24, 8-byte pointer)
+		// plus a control byte, and the bucket an 8-byte allocation; under
+		// eviction churn the deleted-slot markers keep a Swiss-table map
+		// at about 2.5 slots per live entry. It measures 115 bytes.
 		maxBytesPerEntry = 160
 	)
 	clk := newFakeClock()

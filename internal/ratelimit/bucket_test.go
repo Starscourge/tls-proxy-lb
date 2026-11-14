@@ -2,6 +2,8 @@ package ratelimit
 
 import (
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -34,12 +36,14 @@ func TestParamsNoOverflow(t *testing.T) {
 	if p.capacity <= 0 || p.capacity/int64(MaxBurst) != p.interval {
 		t.Fatalf("capacity overflowed: %+v", p)
 	}
-	b := fullBucket(0, p)
-	// A very long idle spell refills to capacity without overflowing.
-	b.tokens = 0
-	b.refill(math.MaxInt64, p.capacity)
-	if b.tokens != p.capacity {
-		t.Fatalf("tokens = %d, want %d", b.tokens, p.capacity)
+	// Two centuries of uptime, the whole burst spent: full stays in range.
+	now := int64(200 * 365 * 24 * time.Hour)
+	b := newBucket(now)
+	for range 3 {
+		b.take(now, p)
+	}
+	if f := b.full.Load(); f <= now || f > now+p.capacity {
+		t.Fatalf("full = %d, want in (now, now+capacity]", f)
 	}
 }
 
@@ -52,7 +56,7 @@ func TestBurstThenExactRate(t *testing.T) {
 	if p.interval != int64(200*time.Millisecond) {
 		t.Fatalf("interval = %v, want 200ms", time.Duration(p.interval))
 	}
-	b := fullBucket(0, p)
+	b := newBucket(0)
 	for i := range l.Burst {
 		if ok, _ := b.take(0, p); !ok {
 			t.Fatalf("request %d of the burst refused", i+1)
@@ -81,10 +85,33 @@ func TestBurstThenExactRate(t *testing.T) {
 	}
 }
 
+// TestTokens: the single stored time gives the token count the classic
+// form would hold.
+func TestTokens(t *testing.T) {
+	p := Limit{Rate: 10, Burst: 3}.params() // 100ms per token
+	b := newBucket(0)
+	ms := int64(time.Millisecond)
+	if got := b.tokens(0, p); got != p.capacity {
+		t.Fatalf("new bucket holds %d, want %d", got, p.capacity)
+	}
+	b.take(0, p)
+	b.take(0, p)
+	for _, tc := range []struct{ at, want int64 }{
+		{0, p.capacity - 2*p.interval},
+		{50 * ms, p.capacity - 2*p.interval + 50*ms},
+		{200 * ms, p.capacity},
+		{time.Hour.Nanoseconds(), p.capacity},
+	} {
+		if got := b.tokens(tc.at, p); got != tc.want {
+			t.Errorf("tokens at %v = %d, want %d", time.Duration(tc.at), got, tc.want)
+		}
+	}
+}
+
 func TestRefillCapsAtBurst(t *testing.T) {
 	l := Limit{Rate: 10, Burst: 3}
 	p := l.params()
-	b := fullBucket(0, p)
+	b := newBucket(0)
 	for range 3 {
 		b.take(0, p)
 	}
@@ -104,7 +131,7 @@ func TestRefillCapsAtBurst(t *testing.T) {
 
 func TestPartialRefillWait(t *testing.T) {
 	p := Limit{Rate: 2, Burst: 1}.params() // 500ms per request
-	b := fullBucket(0, p)
+	b := newBucket(0)
 	b.take(0, p)
 	ok, wait := b.take(int64(300*time.Millisecond), p)
 	if ok || wait != 200*time.Millisecond {
@@ -117,13 +144,10 @@ func TestPartialRefillWait(t *testing.T) {
 
 func TestClockBackwards(t *testing.T) {
 	p := Limit{Rate: 1, Burst: 1}.params()
-	b := fullBucket(int64(10*time.Second), p)
+	b := newBucket(int64(10 * time.Second))
 	b.take(int64(10*time.Second), p)
 	if ok, _ := b.take(int64(5*time.Second), p); ok {
 		t.Fatal("a clock going backwards earned credit")
-	}
-	if b.last != int64(10*time.Second) {
-		t.Fatalf("last moved back to %v", time.Duration(b.last))
 	}
 	if ok, _ := b.take(int64(11*time.Second), p); !ok {
 		t.Fatal("refused one interval after the last use")
@@ -133,7 +157,7 @@ func TestClockBackwards(t *testing.T) {
 func TestLimitShrinks(t *testing.T) {
 	big := Limit{Rate: 1, Burst: 100}.params()
 	small := Limit{Rate: 1, Burst: 2}.params()
-	b := fullBucket(0, big)
+	b := newBucket(0)
 	n := 0
 	for {
 		if ok, _ := b.take(0, small); !ok {
@@ -142,22 +166,52 @@ func TestLimitShrinks(t *testing.T) {
 		n++
 	}
 	if n != 2 {
-		t.Fatalf("after the burst shrank to 2, %d passed", n)
+		t.Fatalf("under a burst of 2, %d passed", n)
+	}
+	// Credit spent under a larger limit is still owed after it shrinks.
+	b = newBucket(0)
+	for range 50 {
+		b.take(0, big)
+	}
+	if ok, wait := b.take(0, small); ok || wait != 49*time.Second {
+		t.Fatalf("after spending 50 of 100 then shrinking to 2: ok=%v wait=%v, want refused for 49s", ok, wait)
 	}
 }
 
 func TestFullAt(t *testing.T) {
 	p := Limit{Rate: 1, Burst: 2}.params()
-	b := fullBucket(0, p)
-	if !b.fullAt(0, p.capacity) {
+	b := newBucket(0)
+	if !b.fullAt(0) {
 		t.Fatal("new bucket not full")
 	}
 	b.take(0, p)
-	if b.fullAt(int64(999*time.Millisecond), p.capacity) {
+	if b.fullAt(int64(999 * time.Millisecond)) {
 		t.Fatal("full before an interval passed")
 	}
-	if !b.fullAt(int64(time.Second), p.capacity) {
+	if !b.fullAt(int64(time.Second)) {
 		t.Fatal("not full after an interval")
+	}
+}
+
+// TestConcurrentTakeExact: goroutines racing on one bucket at one instant
+// get exactly the burst between them, never more.
+func TestConcurrentTakeExact(t *testing.T) {
+	p := Limit{Rate: 1, Burst: 100}.params()
+	b := newBucket(0)
+	var granted atomic.Int64
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 1000 {
+				if ok, _ := b.take(0, p); ok {
+					granted.Add(1)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if granted.Load() != 100 {
+		t.Fatalf("granted %d, want exactly the burst of 100", granted.Load())
 	}
 }
 

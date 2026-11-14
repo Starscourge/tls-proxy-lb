@@ -17,8 +17,8 @@ const (
 	// 4,000. It is also the smallest MaxEntries, one entry per shard.
 	NumShards = 256
 	// DefaultMaxEntries is the table cap used when Options set none. A
-	// bucket costs about 126 bytes at the cap (see TestMillionKeysMemory),
-	// so this is about 13 MB. Only clients seen within one refill time
+	// bucket costs about 115 bytes at the cap (see TestMillionKeysMemory),
+	// so this is about 12 MB. Only clients seen within one refill time
 	// (burst/rate) hold a bucket, since full ones are swept.
 	DefaultMaxEntries = 100_000
 	// evictSample is how many entries a full shard looks at to choose the
@@ -54,17 +54,25 @@ type key struct {
 
 // shard is one lock and the buckets behind it, padded to a cache line so
 // two shards' locks never share one.
+//
+// The lock guards the map, not the buckets: a request for a client the
+// shard already holds takes only the read lock, and spends from the bucket
+// with compare-and-swap. The write lock is for adding a bucket, evicting
+// one and sweeping, which also keeps a sweep from deleting a bucket while
+// a request is spending from it.
 type shard struct {
-	mu sync.Mutex
-	m  map[key]bucket
+	mu sync.RWMutex
+	m  map[key]*bucket
 	// peak is the most entries m has held since it was made.
 	peak int
-	_    [64 - 8 - 8 - 8]byte
+	_    [64 - 24 - 8 - 8]byte
 }
 
 // Table holds every client's token buckets, for every route. It is shared by
-// all connection goroutines; each shard has its own mutex, and a request
-// takes one shard's lock once.
+// all connection goroutines. Each shard has its own lock, and a request for
+// a known client only reads under it, so one busy client's requests do not
+// queue behind each other: they meet only at their bucket's
+// compare-and-swap.
 //
 // Goroutine ownership: New starts at most one sweeper goroutine, which Close
 // stops and waits for.
@@ -80,10 +88,6 @@ type Table struct {
 
 	mu     sync.Mutex
 	routes map[string]uint32
-	// caps holds each route's bucket capacity, by route ID, as its latest
-	// Limiter set it; the sweeper and eviction read it to tell a full
-	// bucket. Copied on write, which happens only when a snapshot is built.
-	caps atomic.Pointer[[]int64]
 
 	stop      chan struct{}
 	done      chan struct{}
@@ -108,7 +112,7 @@ func New(o Options) *Table {
 		done:     make(chan struct{}),
 	}
 	for i := range t.shards {
-		t.shards[i].m = make(map[key]bucket)
+		t.shards[i].m = make(map[key]*bucket)
 	}
 	if o.SweepInterval > 0 {
 		go t.sweeper(o.SweepInterval)
@@ -159,7 +163,6 @@ func (t *Table) Limiter(route string, l Limit) *Limiter {
 	if !l.Enabled() {
 		return nil
 	}
-	p := l.params()
 	t.mu.Lock()
 	id, ok := t.routes[route]
 	if !ok {
@@ -168,17 +171,8 @@ func (t *Table) Limiter(route string, l Limit) *Limiter {
 		id = uint32(len(t.routes))
 		t.routes[route] = id
 	}
-	var caps []int64
-	if old := t.caps.Load(); old != nil {
-		caps = append(caps, *old...)
-	}
-	if int(id) >= len(caps) {
-		caps = append(caps, make([]int64, int(id)+1-len(caps))...)
-	}
-	caps[id] = p.capacity
-	t.caps.Store(&caps)
 	t.mu.Unlock()
-	return &Limiter{t: t, route: id, p: p, limit: l}
+	return &Limiter{t: t, route: id, p: l.params(), limit: l}
 }
 
 // Limiter applies one route's limit to each client. It is immutable and
@@ -204,42 +198,48 @@ func (l *Limiter) Allow(addr netip.Addr) (ok bool, wait time.Duration) {
 	k := key{route: l.route, addr: KeyAddr(addr).As16()}
 	now := t.now()
 	s := &t.shards[maphash.Comparable(t.seed, k)%NumShards]
+	s.mu.RLock()
+	if b := s.m[k]; b != nil {
+		ok, wait = b.take(now, l.p)
+		s.mu.RUnlock()
+		return ok, wait
+	}
+	s.mu.RUnlock()
+
 	s.mu.Lock()
-	b, found := s.m[k]
-	if !found {
+	b := s.m[k]
+	if b == nil {
+		// Still missing now that the lock is exclusive: add it.
 		if len(s.m) >= t.perShard {
-			t.evictLocked(s, now, *t.caps.Load())
+			t.evictLocked(s, now)
 		}
-		b = fullBucket(now, l.p)
-	}
-	ok, wait = b.take(now, l.p)
-	s.m[k] = b
-	if !found {
+		b = newBucket(now)
+		s.m[k] = b
 		s.peak = max(s.peak, len(s.m))
-	}
-	s.mu.Unlock()
-	if !found {
 		t.entries.Add(1)
 	}
+	ok, wait = b.take(now, l.p)
+	s.mu.Unlock()
 	return ok, wait
 }
 
 // evictLocked removes one bucket from the full shard s: the first of a few
-// sampled that has refilled to full, else the least recently used of them.
-// Go randomises where map iteration starts, so the sample is spread over the
-// shard. s.mu is held.
-func (t *Table) evictLocked(s *shard, now int64, caps []int64) {
+// sampled that has refilled to full, else the one of them closest to full,
+// whose loss forgives the least. Go randomises where map iteration starts,
+// so the sample is spread over the shard. s.mu is held for writing.
+func (t *Table) evictLocked(s *shard, now int64) {
 	var victim key
-	oldest := int64(math.MaxInt64)
+	nearest := int64(math.MaxInt64)
 	full := false
 	n := 0
 	for k, b := range s.m {
-		if b.fullAt(now, caps[k.route]) {
+		f := b.full.Load()
+		if f <= now {
 			victim, full = k, true
 			break
 		}
-		if b.last < oldest {
-			victim, oldest = k, b.last
+		if f < nearest {
+			victim, nearest = k, f
 		}
 		if n++; n == evictSample {
 			break
@@ -255,11 +255,6 @@ func (t *Table) evictLocked(s *shard, now int64, caps []int64) {
 // Sweep drops every bucket that has refilled to full, and returns how many it
 // dropped. It locks one shard at a time.
 func (t *Table) Sweep() int {
-	cp := t.caps.Load()
-	if cp == nil {
-		return 0 // no limiter yet, so no buckets
-	}
-	caps := *cp
 	now := t.now()
 	removed := 0
 	for i := range t.shards {
@@ -267,13 +262,13 @@ func (t *Table) Sweep() int {
 		s.mu.Lock()
 		n := 0
 		for k, b := range s.m {
-			if b.fullAt(now, caps[k.route]) {
+			if b.fullAt(now) {
 				delete(s.m, k)
 				n++
 			}
 		}
 		if s.peak >= shrinkMin && len(s.m) < s.peak/shrinkFactor {
-			m := make(map[key]bucket, len(s.m))
+			m := make(map[key]*bucket, len(s.m))
 			for k, b := range s.m {
 				m[k] = b
 			}

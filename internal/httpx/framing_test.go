@@ -316,6 +316,11 @@ func TestPrepareResponseNoBodyKeepsAlive(t *testing.T) {
 		{"GET", "HTTP/1.1 204 No Content\r\n\r\n"},
 		{"GET", "HTTP/1.1 304 Not Modified\r\n\r\n"},
 		{"POST", "HTTP/1.1 204 No Content\r\n\r\n"},
+		// FuzzResponse's second finding: a chunked 204 or 304 must not
+		// end with a 0-length chunk the client reads as the next response.
+		{"GET", "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n"},
+		{"GET", "HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n"},
+		{"GET", "HTTP/1.1 103 Early Hints\r\nTransfer-Encoding: chunked\r\n\r\n"},
 	} {
 		req := &http.Request{Method: tc.method, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1}
 		resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(tc.raw)), req)
@@ -329,7 +334,8 @@ func TestPrepareResponseNoBodyKeepsAlive(t *testing.T) {
 		if err := resp.Write(&out); err != nil {
 			t.Fatal(err)
 		}
-		if s := out.String(); strings.Contains(s, "Connection") || strings.Contains(s, "Content-Length") {
+		if s := out.String(); strings.Contains(s, "Connection") || strings.Contains(s, "Content-Length") ||
+			strings.Contains(s, "Transfer-Encoding") || !strings.HasSuffix(s, "\r\n\r\n") || strings.Contains(s, "\r\n\r\n0") {
 			t.Errorf("%s %q relayed as %q", tc.method, tc.raw, s)
 		}
 	}

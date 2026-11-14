@@ -90,6 +90,16 @@ func PrepareResponse(resp *http.Response, clientReq *http.Request, keepAlive boo
 		if resp.StatusCode == http.StatusNoContent || resp.StatusCode < 200 {
 			resp.ContentLength = -1
 		}
+		// Nor may a 1xx, 204 or 304 carry Transfer-Encoding: with it,
+		// Response.Write ends the (empty) body with a "0\r\n\r\n" chunk,
+		// which the client, knowing such a response has no body, reads
+		// as the start of the next response. A backend's 204 saying
+		// chunked did exactly that (FuzzResponse). A response to HEAD
+		// keeps its Transfer-Encoding: Response.Write sends no body for
+		// it, and the field describes the GET response.
+		if clientReq.Method != http.MethodHead {
+			resp.TransferEncoding = nil
+		}
 	}
 	resp.Close = !keepAlive
 	return keepAlive

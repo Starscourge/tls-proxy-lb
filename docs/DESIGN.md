@@ -2002,3 +2002,183 @@ CPUs.
   this took a 60-second stall per request, so it had gone unnoticed.
 - Allocations per request unchanged from Phase 4: 35 for a reused GET,
   42 for a POST.
+
+## Phase 9: Benchmarks, failure demos and write-up
+
+### The machine's clock is checked, because it was wrong
+
+The first kill demo put the kill at 17.6 s instead of 20. The kernel's
+`adjtimex` tick was flipping between 10000 and 10833 µs: systemd-timesyncd
+in the WSL2 distro and another writer (most likely the chronyd of WSL's
+system distro, since all distros share one kernel) were both adjusting the
+shared clock. At 10833 every clock, monotonic included, ran 8.3% fast
+against NTP (checked against `time.cloudflare.com` and the Windows clock),
+and the wall clock was stepped back about 2.5 s every 30 s. Every latency
+and rate measured in that state is 8% off, and any timeline joined from
+wall-clock times jumps. Switching the clocksource to Hyper-V's did nothing;
+disabling timesyncd fixed it (tick 10000, 0.02% from NTP).
+
+`plot clock` guards every experiment: before a run it fails if the tick is
+more than 10 µs (1,000 ppm) from 10000, and after it fails if the wall
+clock moved by more than 100 ms against `CLOCK_BOOTTIME`. The guard caught
+one leftover step of −2.3 s on its first day and the run was repeated.
+Rejected: monotonic timestamps throughout. k6 has no monotonic clock in its
+scripts, the proxy logs wall time, and a fast monotonic clock is still
+fast; the guard checks the thing that was actually wrong.
+
+### Failure demos: k6 lines, the proxy's own health log
+
+`bench/phase9/demo.js` prints one CSV line per request (start time,
+`X-Backend`, status, latency including connection set-up, k6 error code)
+with `--log-format=raw`. k6's own CSV output writes about 13 rows per
+request, 100 MB a run; these lines are 260 KB gzipped, so the raw results
+are committed. A run fails if k6 dropped an arrival (`dropped_iterations`),
+since a constant-rate test that silently slowed down proves nothing.
+
+The kill, the netem changes and their removal are timed by the scripts
+from k6's first request (not from when the script started k6, which takes
+a second). Ejection and re-admission come from the proxy's health log
+(`backend ejected`, `backend unhealthy`, `backend healthy`), with
+nanosecond timestamps from the proxy's own view. Rejected: polling
+`proxy_backend_healthy` on `/metrics` as Phase 5 did. The admin listener is
+loopback only, so polling from outside the container costs a `docker exec`
+per sample, around 100 ms.
+
+The first two seconds of each run are left out of the "before" window: k6
+opens its connections then, and the proxy is not what is being measured.
+Per-second graphs leave out the last, partial second, which would make
+every rate dip at the end.
+
+### Kill: `docker kill`, the lab's own config
+
+The kill demo runs the lab's `proxy.toml` unchanged, so its timeouts are
+the shipped ones (connect 1 s, response 10 s, three passive failures).
+`docker kill` takes the container's network namespace with it: nothing
+resets the proxy's connections, and the address stops answering. That is
+harsher than Phase 5's `kill -9` of a local process, where the kernel
+answered with resets. Rejected: tuning timeouts for the demo; the claim
+is about the configuration as it ships.
+
+### Slow: three configs, one fault at a time
+
+`bench/phase9/configs/` holds the three proxy configs, mounted over the
+lab's through a `PROXY_CONFIG` compose variable, and the proxy is
+recreated per run (`[health]` applies only at startup). The ejecting
+config sets both the response timeout and the active-check timeout to
+100 ms: with only the response timeout, active checks (500 ms timeout)
+would pass a backend delayed 200 ms, re-admit it after `eject_ms`, and it
+would be ejected again every five seconds. The connect timeout stays at
+1 s, which is why one request under 5% loss took 1,001 ms: a lost SYN is
+retried after 1 s. Left as found rather than tuned after the fact.
+
+### Graphs: SVG from the standard library
+
+`bench/phase9/plot` draws every graph as SVG, colours from a validated
+categorical palette, with light and dark styles that follow
+`prefers-color-scheme` (GitHub shows an SVG in an `<img>`, so its own
+theme does not reach in). It parses every raw result, prints the
+summaries the README quotes, and exits non-zero when a run breaks the
+experiment's claim. Rejected: matplotlib or gnuplot in a container, which
+would draw nicer charts at the cost of a second language in the repo.
+
+### Benchmark: containers pinned like taskset, on the host's network
+
+nginx is not installed here and its version should be pinned, so every
+part of the benchmark is a container (`bench/phase9/bench/compose.yml`)
+with its own `cpuset`, which is `taskset` for a container. The device
+under test, the proxy or nginx, gets one vCPU on each of four cores
+(2, 4, 6, 8) with their sibling threads left idle; two nginx origins get a
+core each; the load generator four cores; vCPUs 0 and 1 stay with the
+system. Under WSL2 these pin vCPUs, not physical cores: Hyper-V moves
+vCPUs across the laptop's performance and efficiency cores as it likes,
+which the median of three runs has to absorb.
+
+Every container uses the host's network, so traffic crosses loopback in
+Docker Desktop's VM. On Docker's bridge, nginx and the proxy both
+reached about 48k requests per second and wrk2's p99 at 70% load ranged
+from 60 ms to 2.7 s between identical runs. The counters showed
+retransmissions with `DelayedACKLost` and no softnet drops: segments
+delayed past the retransmission timeout, not lost, while the veth pairs'
+softirq work queued behind busy device-under-test vCPUs. Loopback has no
+veth pair and no bridge. Rejected: the bridge, whose noise was larger than
+the difference being measured.
+
+### Measure the sustained clock, not the turbo
+
+Windows' `% Processor Performance` counter showed the laptop at about
+190% of base clock for the first 8 to 12 s of load and 160% after that,
+indefinitely. A 15 s throughput run measured mostly turbo; a 40 s latency
+run at "70% of that" was really at about 83% of what the machine
+sustains, and some runs collapsed into seconds of queueing. Each cell (one
+scenario, concurrency and device) now starts with 20 s at full speed,
+thrown away, and every measured run follows 5 s more. The device under
+test is created once per cell rather than per run, which keeps the whole
+benchmark near 70 minutes; its peak memory is therefore per cell.
+Rejected: disabling turbo in the Windows power plan, which would hold the
+CPU near base clock and make every number smaller and less like a
+deployment.
+
+### No cap on requests per connection while benchmarking
+
+Both proxies close a client connection after 1,000 requests by default.
+wrk2 then reconnects, and because it corrects for coordinated omission it
+charges the reconnect to every request scheduled behind it on that
+connection: p99s of 0.9 to 3.4 s with p50 under 2 ms. With the cap lifted
+(`max_requests_per_conn = 0`, nginx `keepalive_requests 10000000`) the
+same runs gave p99s of 5 to 25 ms. The keep-alive scenarios measure
+proxying on long-lived connections; connection set-up has its own
+scenario.
+
+### A new connection is a full handshake
+
+wrk and wrk2 call `SSL_clear` when a connection closes, which keeps the
+session, and offer it on the next connect: 7,519 of 7,531 "new"
+connections were resumed. `lab/Dockerfile` builds wrk 4.2.0 as
+`wrk-noresume` and wrk2 with one line added after `SSL_clear`,
+`SSL_set_session(c->ssl, NULL)`, and the proxy's access log shows no
+resumed session from either. Both servers keep session tickets on; the
+client simply never offers one, so every request in `new-1k` pays the
+certificate signature as well as the key exchange. Rejected: turning
+tickets off on the servers, which the proxy has no setting for, and which
+would test a configuration nobody runs.
+
+### wrk2 for latency, built from a pinned commit
+
+wrk slows down when the server does, so its percentiles under-report the
+tail; wrk2 sends at a constant rate and records latency from when each
+request should have been sent. It has been unmaintained since 2019 and
+is not packaged, and its bundled LuaJIT 2.0 writes a bytecode object
+today's linker rejects; `lab/Dockerfile` has LuaJIT write the bytecode as
+C instead. wrk2 calibrates for 10 s and records only after that, so each
+40 s latency run records 30 s. Rejected: k6, which runs a JavaScript
+iteration per request and would share the load generator's four cores
+with 30,000 to 60,000 of them a second. k6 stays for the failure demos,
+which need its per-request lines at 500 to 1,000 a second.
+
+### nginx configured to match, at its best where they differ
+
+`nginx-proxy.conf` is the plan's upstream block plus a setting for each
+thing the proxy does:
+
+| | tls-proxy-lb (`proxy.toml`) | nginx (`nginx-proxy.conf`) |
+| --- | --- | --- |
+| workers | `GOMAXPROCS` 4 | `worker_processes 4` |
+| TLS | 1.2 and 1.3; Go picks `TLS_AES_128_GCM_SHA256` and X25519MLKEM768 | the same suites in the same preference, `ssl_prefer_server_ciphers on`, `ssl_ecdh_curve X25519MLKEM768:...` |
+| certificate | ECDSA P-256, `default.test` | the same files |
+| upstream idle connections | 128 per backend, 256 in all | `keepalive 64` per worker, 256 in all |
+| client keep-alive | `idle_ms` 60000, no request cap | `keepalive_timeout 60s`, `keepalive_requests 10000000` |
+| request headers | Host kept, `X-Forwarded-For` overwritten, `X-Forwarded-Proto` | `proxy_set_header` the same three |
+| response bodies | streamed through fixed buffers | buffered in memory, 16 × 16 KB, never to a temp file |
+| access log | JSON, 64 KB buffer, flushed every second, to `/dev/null` | JSON with the same fields, `buffer=64k flush=1s`, to `/dev/null` |
+
+`bench.sh` checks before anything is measured that both negotiate the
+same protocol, suite and group (`openssl s_client` from the load
+generator, which links the same OpenSSL as wrk) and that the proxy's
+`GOMAXPROCS` equals nginx's worker count. nginx 1.30.6 is the Alpine image
+with OpenSSL 3.5, the first with ML-KEM; with 1.28's OpenSSL 3.3 it would
+have negotiated plain X25519 and done less work per handshake than Go.
+nginx's response buffering stays on, as it ships, but with buffers big
+enough for 100 KB: past them it spills to a temporary file. Access logs go
+to `/dev/null` on both sides so each line is formatted, buffered and
+written without a disk; a log on tmpfs would have grown by gigabytes and
+counted against the container's memory.

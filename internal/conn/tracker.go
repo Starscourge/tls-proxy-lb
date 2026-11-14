@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
+	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
 // State is where a tracked connection is in its life.
@@ -40,6 +41,7 @@ func (s State) String() string {
 // TrackedConn is a client connection registered with a Tracker.
 type TrackedConn struct {
 	net.Conn
+	t       *Tracker
 	id      uint64
 	started time.Time
 	state   atomic.Int32
@@ -48,7 +50,15 @@ type TrackedConn struct {
 	// the connection is not counted there.
 	peer  netip.Addr
 	perIP netip.Addr
+	// upstream is the backend connection the current request is using,
+	// so CloseAll can cut off a request waiting on a backend, which no
+	// client read or write would interrupt.
+	upstream atomic.Pointer[upstream.Conn]
 }
+
+// SetUpstream records the backend connection the current request is
+// using, or nil once it has been parked or discarded.
+func (c *TrackedConn) SetUpstream(uc *upstream.Conn) { c.upstream.Store(uc) }
 
 // Peer returns the remote IP address, IPv4-mapped addresses unmapped. It is
 // the zero Addr for a connection that is not over IP, such as a pipe.
@@ -63,6 +73,11 @@ func (c *TrackedConn) State() State { return State(c.state.Load()) }
 // SetState records the connection's state. Only the connection's own
 // goroutine calls it; other goroutines read it through State or List.
 func (c *TrackedConn) SetState(s State) { c.state.Store(int32(s)) }
+
+// Draining reports whether the server is shutting down: the connection
+// should finish the request it is on, announce Connection: close, and take
+// no other.
+func (c *TrackedConn) Draining() bool { return c.t != nil && c.t.draining.Load() }
 
 // ConnInfo describes one open connection, as returned by Tracker.List.
 type ConnInfo struct {
@@ -107,9 +122,11 @@ func (r RejectReason) String() string { return rejectReasonNames[r] }
 // Tracker counts and lists open client connections and enforces the caps on
 // them. It is shared by the accept loop, which adds connections, and the
 // connection goroutines, which remove themselves; a mutex guards the set and
-// the per-IP counts, and atomics hold the counters.
+// the per-IP counts, and atomics hold the counters, the limits and the
+// draining flag.
 type Tracker struct {
-	limits Limits
+	limits   atomic.Pointer[Limits]
+	draining atomic.Bool
 
 	mu     sync.Mutex
 	conns  map[*TrackedConn]struct{}
@@ -124,32 +141,42 @@ type Tracker struct {
 
 // NewTracker returns a tracker that enforces l.
 func NewTracker(l Limits) *Tracker {
-	return &Tracker{limits: l, conns: make(map[*TrackedConn]struct{}), perIP: make(map[netip.Addr]int)}
+	t := &Tracker{conns: make(map[*TrackedConn]struct{}), perIP: make(map[netip.Addr]int)}
+	t.SetLimits(l)
+	return t
 }
+
+// SetLimits replaces the caps checked by later calls to Add. Connections
+// already open are not closed, even if they are now over a cap.
+func (t *Tracker) SetLimits(l Limits) { t.limits.Store(&l) }
+
+// Limits returns the caps in force.
+func (t *Tracker) Limits() Limits { return *t.limits.Load() }
 
 // Add registers c. It returns false, and registers nothing, if the tracker is
 // at a cap or closed, with the reason; the caller then closes c. Every
 // successful Add must be matched by one Remove.
 func (t *Tracker) Add(c net.Conn) (*TrackedConn, RejectReason) {
 	peer := remoteIP(c)
+	l := t.limits.Load()
 	var key netip.Addr
-	if t.limits.MaxPerIP > 0 && peer.IsValid() && !t.limits.Exempt.Contains(peer) {
+	if l.MaxPerIP > 0 && peer.IsValid() && !l.Exempt.Contains(peer) {
 		key = ratelimit.KeyAddr(peer)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || (t.limits.MaxConns > 0 && len(t.conns) >= t.limits.MaxConns) {
+	if t.closed || (l.MaxConns > 0 && len(t.conns) >= l.MaxConns) {
 		t.rejected[RejectMaxConns].Add(1)
 		return nil, RejectMaxConns
 	}
 	if key.IsValid() {
-		if t.perIP[key] >= t.limits.MaxPerIP {
+		if t.perIP[key] >= l.MaxPerIP {
 			t.rejected[RejectPerIP].Add(1)
 			return nil, RejectPerIP
 		}
 		t.perIP[key]++
 	}
-	tc := &TrackedConn{Conn: c, id: t.nextID.Add(1), started: time.Now(), peer: peer, perIP: key}
+	tc := &TrackedConn{Conn: c, t: t, id: t.nextID.Add(1), started: time.Now(), peer: peer, perIP: key}
 	t.conns[tc] = struct{}{}
 	t.wg.Add(1)
 	t.accepted.Add(1)
@@ -243,8 +270,37 @@ func (t *Tracker) List() []ConnInfo {
 	return out
 }
 
+// Drain starts a graceful shutdown. Every connection's Draining reports
+// true from now on, and connections waiting idle for their next request
+// are woken by a read deadline in the past, so they end at once. A
+// connection still on its first request (StateNew) is left to send it.
+//
+// A connection going idle sets its state, then its idle deadline, then
+// checks Draining. Drain sets the flag before it looks at states, so either
+// the connection sees the flag, or Drain sees it idle and its deadline,
+// set later, wins.
+func (t *Tracker) Drain() {
+	t.draining.Store(true)
+	t.mu.Lock()
+	idle := make([]*TrackedConn, 0, len(t.conns))
+	for tc := range t.conns {
+		if tc.State() == StateIdle {
+			idle = append(idle, tc)
+		}
+	}
+	t.mu.Unlock()
+	now := time.Now()
+	for _, tc := range idle {
+		_ = tc.SetReadDeadline(now)
+	}
+}
+
+// Draining reports whether Drain has been called.
+func (t *Tracker) Draining() bool { return t.draining.Load() }
+
 // CloseAll stops admitting connections and closes every open one, which
-// unblocks their goroutines. Phase 7 replaces this hard stop with a drain.
+// unblocks their goroutines. It is the hard stop, used directly or when a
+// drain runs out of time.
 func (t *Tracker) CloseAll() {
 	t.mu.Lock()
 	t.closed = true
@@ -255,8 +311,27 @@ func (t *Tracker) CloseAll() {
 	t.mu.Unlock()
 	for _, tc := range conns {
 		tc.Close()
+		// A connection being parked at this moment may be closed after
+		// it is back in the idle pool; the pool's liveness check discards
+		// it on the next Get.
+		if uc := tc.upstream.Load(); uc != nil {
+			uc.Close()
+		}
 	}
 }
 
 // Wait blocks until every added connection has been removed.
 func (t *Tracker) Wait() { t.wg.Wait() }
+
+// Done returns a channel closed once every added connection has been
+// removed. The goroutine that closes it returns at the same moment, so the
+// tracker must not be added to after Done is called (the server has closed
+// its listeners).
+func (t *Tracker) Done() <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+	return done
+}

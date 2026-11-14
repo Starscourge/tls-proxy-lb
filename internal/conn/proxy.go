@@ -241,6 +241,13 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	if err := cc.c.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		return false
 	}
+	// Checked after the state and the deadline are set, so a drain that
+	// starts now either is seen here or finds the connection idle and
+	// moves its deadline to now (Tracker.Drain). A new connection still
+	// gets its first request.
+	if !first && cc.tc.Draining() {
+		return false
+	}
 	cc.lr.Limit(cc.maxHeader)
 	// Wait for the first byte of the next request. EOF, the idle timeout or
 	// a closed connection all end the connection quietly.
@@ -423,10 +430,12 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	if reqBody != nil {
 		cc.reqFlush.w = uc.W
 	}
+	cc.tc.SetUpstream(uc)
 	// Every path that does not park the connection closes it. Deferred
 	// before the writer's stop, so it runs after the writer is joined. uc
 	// is nil once parked, or if the retry's dial failed.
 	defer func() {
+		cc.tc.SetUpstream(nil)
 		if uc != nil {
 			uc.Discard()
 		}
@@ -443,6 +452,7 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 		rec.retried = true
 		pool.Stats.Retry(metrics.RetryStale)
 		uc, err = b.Conns.Dial(ctx, cc.t.UpstreamConnect, cc.t.UpstreamResponse)
+		cc.tc.SetUpstream(uc)
 		if err != nil {
 			cc.reportFailure(ctx, b)
 			return attempt{dialErr: err}
@@ -477,6 +487,10 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	if w.done() && reqBody != nil && !reqBody.EOF() {
 		// The backend stopped taking the body; what is left of it is
 		// still on the client connection.
+		keepAlive = false
+	}
+	if cc.tc.Draining() {
+		// Shutting down: this response is the connection's last.
 		keepAlive = false
 	}
 	keepAlive = httpx.PrepareResponse(resp, req, keepAlive)
@@ -529,6 +543,7 @@ func (cc *clientConn) forward(ctx context.Context, rec *accessRecord, pool *lb.P
 	// parked before logging, so the next request can have it at once.
 	if reusable && writerFinished && w.err == nil &&
 		(reqBody == nil || reqBody.EOF()) {
+		cc.tc.SetUpstream(nil)
 		b.Conns.Put(uc)
 		uc = nil
 	}
@@ -695,7 +710,7 @@ func (cc *clientConn) dialError(rec *accessRecord, err error, head, linger bool)
 // time. A request with a body ends the connection with a lingering close,
 // as other refusals do, since the unread body is still on it.
 func (cc *clientConn) tooManyRequests(rec *accessRecord, req *http.Request, client netip.Addr, wait time.Duration, clientKeepAlive bool) bool {
-	keepAlive := clientKeepAlive && req.Body == http.NoBody
+	keepAlive := clientKeepAlive && req.Body == http.NoBody && !cc.tc.Draining()
 	cc.linger = req.Body != http.NoBody
 	cc.dw.Timeout = errorWriteTimeout
 	err := httpx.WriteTooManyRequests(cc.bw, ratelimit.RetryAfter(wait), keepAlive, req.Method == http.MethodHead)

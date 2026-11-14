@@ -54,7 +54,9 @@ fail=()
   printf '%-16s %10s %14s %10s %8s %10s  %s\n' target cpu_s execs exec/s corpus crashers result
   for t in "${targets[@]}"; do
     read -r name pkg <<<"$t"
-    read -r user sys <"$tmp/$name.time"
+    # The last line: time prints "Command exited with non-zero status"
+    # before it when the command failed.
+    read -r user sys < <(tail -1 "$tmp/$name.time")
     cpu=$(awk -v u="$user" -v s="$sys" 'BEGIN { printf "%.0f", u + s }')
     rc=$(cat "$tmp/$name.rc")
     last=$(grep '^fuzz: elapsed' "$tmp/$name.log" | tail -1)

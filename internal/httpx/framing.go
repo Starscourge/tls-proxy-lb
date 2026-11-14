@@ -67,12 +67,28 @@ func BodyAllowed(method string, status int) bool {
 func PrepareResponse(resp *http.Response, clientReq *http.Request, keepAlive bool) bool {
 	RemoveHopByHop(resp.Header)
 	resp.Proto, resp.ProtoMajor, resp.ProtoMinor = "HTTP/1.1", 1, 1
-	if BodyAllowed(clientReq.Method, resp.StatusCode) && resp.ContentLength < 0 {
+	switch {
+	case BodyAllowed(clientReq.Method, resp.StatusCode) && resp.ContentLength < 0:
 		if clientReq.ProtoAtLeast(1, 1) {
 			resp.TransferEncoding = []string{"chunked"}
 		} else {
 			resp.TransferEncoding = nil
 			keepAlive = false
+		}
+	case !BodyAllowed(clientReq.Method, resp.StatusCode):
+		// No body can follow (HEAD, 1xx, 204, 304), so a missing length
+		// needs no close to mark its end. Response.Write would add
+		// Connection: close for any HTTP/1.1 response with no length,
+		// and the client would drop a connection the proxy keeps.
+		// Uncompressed is the one field that check consults, and it is
+		// read nowhere else on the write side. FuzzResponse found this.
+		resp.Uncompressed = true
+		// A 1xx or 204 must not carry Content-Length (RFC 9110 section
+		// 8.6); Response.Write would send "Content-Length: 0" for one
+		// answering a POST, PUT or PATCH. A HEAD or 304 response keeps
+		// the length it was given, which describes the representation.
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode < 200 {
+			resp.ContentLength = -1
 		}
 	}
 	resp.Close = !keepAlive

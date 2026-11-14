@@ -307,3 +307,30 @@ func TestWriteTooManyRequestsAllocs(t *testing.T) {
 		t.Fatalf("allocates %v per call", n)
 	}
 }
+
+// A response that cannot have a body keeps the client connection open even
+// when the backend gave no length (FuzzResponse's first finding).
+func TestPrepareResponseNoBodyKeepsAlive(t *testing.T) {
+	for _, tc := range []struct{ method, raw string }{
+		{"HEAD", "HTTP/1.1 200 OK\r\n\r\n"},
+		{"GET", "HTTP/1.1 204 No Content\r\n\r\n"},
+		{"GET", "HTTP/1.1 304 Not Modified\r\n\r\n"},
+		{"POST", "HTTP/1.1 204 No Content\r\n\r\n"},
+	} {
+		req := &http.Request{Method: tc.method, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1}
+		resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(tc.raw)), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !PrepareResponse(resp, req, true) {
+			t.Fatalf("%s %q: not kept alive", tc.method, tc.raw)
+		}
+		var out bytes.Buffer
+		if err := resp.Write(&out); err != nil {
+			t.Fatal(err)
+		}
+		if s := out.String(); strings.Contains(s, "Connection") || strings.Contains(s, "Content-Length") {
+			t.Errorf("%s %q relayed as %q", tc.method, tc.raw, s)
+		}
+	}
+}

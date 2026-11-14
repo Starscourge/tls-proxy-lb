@@ -117,6 +117,21 @@ services:
       lab:
         ipv4_address: 10.0.0.20
 
+  # A second load generator on its own address, for checks that need two
+  # clients the proxy tells apart (bench/phase6/k6.sh).
+  loadgen2:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+      target: loadgen
+    image: tlslab/loadgen:dev
+    init: true
+    volumes:
+      - ./certs/ca.crt:/work/ca.crt:ro
+    networks:
+      lab:
+        ipv4_address: 10.0.0.21
+
 networks:
   lab:
     ipam:

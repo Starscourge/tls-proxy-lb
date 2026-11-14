@@ -30,6 +30,15 @@ pool = "pool_b"
 cert = "certs/b.test.crt"
 key  = "certs/b.test.key"
 
+# Rate limited for the Phase 6 k6 check (bench/phase6/k6.sh): each client
+# address gets 200 requests per second with a burst of 20. It has no
+# certificate of its own, so it is served the default one; k6 cannot be
+# given the lab CA and skips verification anyway.
+[[route]]
+host = "limited.test"
+pool = "pool_a"
+rate_limit = { rate = 200, burst = 20 }
+
 # Served to clients without SNI and to names with no route.
 [tls]
 default_cert = "certs/default.test.crt"
@@ -83,3 +92,16 @@ eject_ms         = 5000
 # Prometheus shares the container's network namespace to scrape it.
 [admin]
 address = "127.0.0.1:9901"
+
+# Rate limiting is off by default ([rate_limit] sets no rate) and on for the
+# routes that ask for it. Buckets for clients idle a whole refill time are
+# swept every 10 s.
+[rate_limit]
+max_entries = 100000
+sweep_ms    = 10000
+
+# One client address may hold at most this many connections; more are
+# closed at accept, before the TLS handshake. High enough for the Phase 9
+# runs at concurrency 1,000 from the single loadgen.
+[limits]
+max_conns_per_ip = 2048

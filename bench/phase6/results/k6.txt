@@ -1,0 +1,74 @@
+# Phase 6: k6 at twice the rate limit from one client, a second client under it
+date:     2026-11-14T05:56:26Z
+commit:   93aef32-dirty
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+k6:       k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
+lab:      proxy 10.0.0.10 (2 CPUs), route limited.test -> pool_a (3 backends, least_conn),
+          rate_limit = { rate = 200, burst = 20 } per client address
+load:     k6 constant-arrival-rate for 60s over HTTPS keep-alive (bench/phase6/ratelimit.js):
+          loadgen 400/s, loadgen2 100/s, at the same time
+
+loadgen  (10.0.0.20): 24001 requests scheduled over 60s (400.0/s; k6's wall-clock rate 417.4/s), 0 dropped by k6
+          200: 12019  429: 11982  other: 0
+          accepted 200.32/s against a limit of 200/s (+0.16%); 199.98/s after the burst of 20
+loadgen2 (10.0.0.21): 6001 requests scheduled over 60s (100.0/s; k6's wall-clock rate 104.4/s), 0 dropped by k6
+          200: 6001  429: 0  other: 0
+loadgen   latency ms: avg 0.42  p50 0.43  p99 1.00  max 4.00
+loadgen2  latency ms: avg 0.59  p50 0.56  p99 1.19  max 7.87
+proxy_rate_limited_requests_total{route="limited.test"}: 11982 -> 23964 (+11982)
+result:   PASS
+
+## k6 output, loadgen
+
+
+  █ TOTAL RESULTS 
+
+    CUSTOM
+    status_200.....................: 12019  209.018194/s
+    status_429.....................: 11982  208.37474/s
+
+    HTTP
+    http_req_duration..............: avg=417.79µs p(50)=427.8µs  p(99)=995.03µs max=3.99ms
+      { expected_response:true }...: avg=577.78µs p(50)=534.56µs p(99)=1.16ms   max=3.99ms
+    http_req_failed................: 49.92% 11982 out of 24001
+    http_reqs......................: 24001  417.392934/s
+
+    EXECUTION
+    iteration_duration.............: avg=492.78µs p(50)=493.11µs p(99)=1.15ms   max=4.33ms
+    iterations.....................: 24001  417.392934/s
+    vus............................: 0      min=0              max=1 
+    vus_max........................: 50     min=50             max=50
+
+    NETWORK
+    data_received..................: 4.1 MB 71 kB/s
+    data_sent......................: 2.3 MB 40 kB/s
+
+
+
+
+## k6 output, loadgen2
+
+
+  █ TOTAL RESULTS 
+
+    CUSTOM
+    status_200.....................: 6001   104.360534/s
+
+    HTTP
+    http_req_duration..............: avg=593.63µs p(50)=555.53µs p(99)=1.18ms max=7.87ms
+      { expected_response:true }...: avg=593.63µs p(50)=555.53µs p(99)=1.18ms max=7.87ms
+    http_req_failed................: 0.00%  0 out of 6001
+    http_reqs......................: 6001   104.360534/s
+
+    EXECUTION
+    iteration_duration.............: avg=698.22µs p(50)=648.34µs p(99)=1.56ms max=8.18ms
+    iterations.....................: 6001   104.360534/s
+    vus............................: 0      min=0         max=1 
+    vus_max........................: 50     min=50        max=50
+
+    NETWORK
+    data_received..................: 1.1 MB 20 kB/s
+    data_sent......................: 588 kB 10 kB/s
+
+
+

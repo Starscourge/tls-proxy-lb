@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -34,6 +35,10 @@ type Handler interface {
 type Server struct {
 	tracker *Tracker
 	logger  *slog.Logger
+
+	// OnPanic, if set, is called once for each panic recovered in a
+	// connection goroutine, after it is logged. Set it before Serve.
+	OnPanic func()
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -130,7 +135,27 @@ func (s *Server) Serve(ln net.Listener, h Handler) error {
 func (s *Server) serveConn(tc *TrackedConn, h Handler) {
 	defer s.tracker.Remove(tc)
 	defer tc.Close()
+	// Deferred last, so it runs first: the panic is logged, then the
+	// connection is closed and removed as on any other return. Deferred
+	// calls in the handler (buffers returned, the upstream connection
+	// discarded, the request writer joined) have already run.
+	defer s.recoverConn(tc)
 	h.ServeConn(s.ctx, tc)
+}
+
+// recoverConn turns a panic in one connection's goroutine into the end of
+// that connection: a bug triggered by one request must not take down every
+// other client.
+func (s *Server) recoverConn(tc *TrackedConn) {
+	v := recover()
+	if v == nil {
+		return
+	}
+	s.logger.Error("panic serving connection; closing it",
+		"remote", tc.RemoteAddr().String(), "panic", v, "stack", string(debug.Stack()))
+	if s.OnPanic != nil {
+		s.OnPanic()
+	}
 }
 
 // stopped reports whether ln's accept loop was told to end.

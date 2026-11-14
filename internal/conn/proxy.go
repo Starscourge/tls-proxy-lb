@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"runtime/debug"
 	"slices"
 	"syscall"
 	"time"
@@ -70,6 +71,9 @@ type Proxy struct {
 	// the request is sent and before the writer reports done. Tests use it
 	// to hold the writer back past the response.
 	afterRequestWrite func()
+	// onRequest, if set, is called with each request the proxy accepts,
+	// before it is routed. Tests use it to panic on purpose.
+	onRequest func(*http.Request)
 }
 
 // Validate checks the proxy's settings.
@@ -292,6 +296,9 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	if reason != httpx.ReasonNone {
 		cc.p.Metrics.BadRequest(reason)
 		return cc.reject(cc.newRecord(start, req), req, reason.Status(), reason.String())
+	}
+	if cc.p.onRequest != nil {
+		cc.p.onRequest(req)
 	}
 	if cc.redirectPort != 0 {
 		return cc.redirect(snap, req, start)
@@ -644,7 +651,7 @@ func (cc *clientConn) exchange(uc *upstream.Conn, req *http.Request, reqBody *ht
 		*w = bodyWriter{}
 		return nil, err
 	}
-	w.start(uc, req, reqBody, cc.p.afterRequestWrite)
+	w.start(uc, req, reqBody, cc.p.afterRequestWrite, cc.writerPanicked)
 	return cc.readResponse(uc, req)
 }
 
@@ -954,7 +961,7 @@ type bodyWriter struct {
 // start sends req on uc, inline or from a new goroutine; w must not be
 // running. after, if non-nil, runs in the goroutine once the request is
 // sent (Proxy.afterRequestWrite).
-func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, after func()) {
+func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.Body, after func(), panicked func(any)) {
 	*w = bodyWriter{uc: uc, reqBody: reqBody}
 	if reqBody == nil {
 		// No body: nothing can block on the client, so write inline.
@@ -963,7 +970,18 @@ func (w *bodyWriter) start(uc *upstream.Conn, req *http.Request, reqBody *httpx.
 	}
 	w.ch = make(chan struct{})
 	go func() {
-		defer close(w.ch)
+		defer func() {
+			// The writer is its own goroutine, out of reach of the
+			// connection goroutine's recover. A panic here fails the
+			// request: the upstream connection is closed, which wakes
+			// the response reader.
+			if v := recover(); v != nil {
+				w.err = fmt.Errorf("request writer panic: %v", v)
+				uc.Close()
+				panicked(v)
+			}
+			close(w.ch)
+		}()
 		w.err = writeRequest(uc, req)
 		if after != nil {
 			after()
@@ -1031,6 +1049,14 @@ func (w *bodyWriter) stop() {
 	w.reqBody.Abort()
 	w.uc.Close()
 	<-w.ch
+}
+
+// writerPanicked logs and counts a panic recovered in the request writer
+// goroutine.
+func (cc *clientConn) writerPanicked(v any) {
+	cc.log.Error("panic writing a request upstream; failing it",
+		"client", cc.ip, "panic", v, "stack", string(debug.Stack()))
+	cc.p.Metrics.Panic()
 }
 
 // clientIP returns the address part of a remote address, without brackets

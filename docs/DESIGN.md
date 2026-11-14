@@ -2277,3 +2277,137 @@ window ran on past the re-admission. `plot slow` now takes re-admission
 as the first `backend healthy` after the ejection, ends the
 out-of-rotation window there, and counts repeat ejections during the
 fault.
+
+### The access line is encoded by hand: the hotspot that was fixed
+
+Profiles at 200 keep-alive connections (`bench-hotspots`, kept in
+`bench/phase9/results/hotspots/`) had one cost standing out among those
+the proxy controls: the access line, written through `slog`'s JSON
+handler. It was 41% of the bytes allocated (`[]slog.Attr` and its
+growth), 11% of CPU, and 47% of mutex wait, because `slog` takes its
+handler's mutex for every line. (An earlier profile in this phase put the
+mutex share at 83%.) The proxy now encodes the line itself into a buffer
+the connection keeps, byte for byte what `slog` wrote, and hands it to
+`logbuf` in one `Write`. `TestAccessLineMatchesSlog` compares whole lines
+with `slog`'s, control characters, invalid UTF-8 and floats at the edge
+of exponent notation included, and `TestAccessLineAllocatesNothing`
+keeps it free of allocations. `slog` still writes every other log
+line.
+
+Before (a42e412) and after (4418151, measured at 88dd81c), with every
+latency run at one rate:
+
+| | before | after |
+| --- | --- | --- |
+| Throughput, req/s (median, range) | 50,191 (48,887–50,260) | 53,986 (45,902–58,240) |
+| p99 at 35.1k req/s | 41.0 ms (31.0–519.3) | 4.8 ms (4.4–10.8) |
+| CPU per request | 76.0 µs | 67.3 µs |
+| Allocated per request | 3.7 KB | 2.2 KB |
+| Mutex wait per 30 s | 9.3 s | 1.0 s |
+| GC share of CPU | 2.9% | 1.5% |
+
+The p99 change is the robust one: every run before was slower than every
+run after. The throughput gain is within the spread of single runs. An
+earlier session measured the same comparison at +20% (70 to 60 µs per
+request).
+
+Rejected: a pool of `[]slog.Attr`. It would cut the garbage but keep the
+mutex, and the mutex was the cause of the tail.
+
+### Deadlines stay per read and write
+
+The next item in the CPU profile after the access line was deadlines:
+`SetReadDeadline` and `SetWriteDeadline` on every read and write, and the
+runtime's timer updates behind them, together about 3% of CPU. Rejected:
+setting a deadline only when the current one is more than some fraction
+used up. A timeout would then fire anywhere between its value and its
+value plus that slack, and the slowloris defences (Phase 8) depend on the
+header and body deadlines being what the config says. 3% is smaller than
+the run-to-run noise in throughput.
+
+What else the profile shows is not the proxy's to change. Over half the
+CPU is the kernel's loopback send and receive (`Syscall6`), and about
+90% of the bytes still allocated are inside `net/http`'s parsers and
+writers (`readMIMEHeader` alone is 46%), which the stdlib rule keeps on
+purpose.
+
+### GC: the default stays
+
+`bench-gc` swept `GOGC` 50, 100 (the default), 200, 400, and `off` with
+`GOMEMLIMIT=256MiB`, at 200 keep-alive connections, every latency run at
+one rate (37.5k req/s):
+
+| Setting | req/s (median, range) | p99 ms (median, range) | GC % of CPU | Peak MB |
+| --- | --- | --- | --- | --- |
+| GOGC=100 (default) | 53,590 (53,439–58,370) | 7.2 (3.3–15.8) | 1.42 | 32 |
+| GOGC=50 | 48,316 (46,577–55,945) | 442.7 (6.6–551.9) | 2.92 | 28 |
+| GOGC=200 | 52,546 (51,942–54,034) | 9.4 (7.8–11.8) | 0.71 | 40 |
+| GOGC=400 | 48,299 (47,310–51,734) | 6.7 (6.3–11.8) | 0.39 | 57 |
+| GOGC=off, GOMEMLIMIT=256MiB | 46,820 (46,363–58,447) | 3.5 (3.3–5.2) | 0.06 | 248 |
+
+The GC's share halves with each doubling of `GOGC`, as it should, and
+peak memory grows. At 1.4% of CPU by default, no setting could gain
+more than 1.4%, so the throughput differences (up to 13%, with
+overlapping ranges) are the machine. `GOGC=off` under a limit had the
+lowest p99, but inside the default's range, at eight times the memory.
+`GOGC=50` had p99s over 400 ms in two of three runs; its GC share
+doubled, but that does not explain hundreds of milliseconds, and it was
+not chased further since 50 is not a candidate. Kept: the defaults, with
+`GOMEMLIMIT` recommended as a ceiling in a memory-limited container, not
+as tuning.
+
+### nginx's tail is not `reuseport`'s hashing
+
+In the full run, nginx's p99 at 70% of its maximum with 1 KB on
+keep-alive swung between runs of one cell: 6.1, 47.4 and 5,219.8 ms at
+50 connections; 4.9, 539.0 and 7.8 ms at 200. The run at 5.2 s also fell
+short of its rate (48,931 of 51,039 a second). Hypothesis: with 50
+connections, `reuseport` can hash enough of them to one worker to
+saturate it at 70% of the total. Six reruns of that cell, sampling each
+worker's CPU time, refute it:
+
+| Run | p99 ms | Workers' shares of nginx's CPU |
+| --- | --- | --- |
+| 1 | 3.5 | 25, 25, 25, 25% |
+| 2 | 4.6 | 19, 28, 30, 24% |
+| 3 | 25.7 | 27, 24, 26, 23% |
+| 4 | 5.5 | 26, 28, 21, 25% |
+| 5 | 14.7 | 28, 25, 22, 26% |
+| 6 | 8.1 | 22, 23, 27, 29% |
+
+The most uneven run had one of the lowest tails, and the highest was
+among the most even. The cause is not known; the README reports the
+spread as it is.
+
+### Graphs cut an outlying whisker
+
+One nginx run at 5.2 s set the scale of its whole panel, which drew
+every other bar as a sliver. A whisker longer than three times the
+tallest bar in its panel is now cut at the panel's top, ends in an
+arrow, and is labelled with its maximum. Rejected: a log scale, which
+makes bar lengths meaningless; and dropping the outlier, which would hide
+exactly what the reader should see.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H); details in
+`bench/phase9/results/*/env.txt`.
+
+- Against nginx, throughput as a share of nginx's, median of three runs:
+
+  | Scenario | 50 conns | 200 conns | 1,000 conns |
+  | --- | --- | --- | --- |
+  | 1 KB, keep-alive | 74.5% | 62.9% | 81.9% |
+  | 1 KB, new TLS connection per request | 71.9% | 87.1% | 107.9% |
+  | 100 KB, keep-alive | 84.1% | 91.3% | 85.1% |
+
+  The proxy's p99 at 70% of its own maximum was 3 to 17 ms except with
+  a handshake per request at 1,000 connections (90 ms, nginx 65 ms). Its
+  peak memory was 20 to 152 MB (nginx 41 to 160 MB), and the GC was 0.5
+  to 9% of its CPU. No errors in any run, and every new-connection run
+  opened at least 0.9 connections per request.
+- Kill: 0 failed of 60,001 requests; ejected 101 ms after `docker kill`,
+  re-admitted 2.5 s after `docker start`.
+- netem `delay 200ms 20ms`, p99 with the fault on: rr 220 ms, lc 3.1 ms,
+  lc-eject 0.80 ms (ejected after 719 ms). netem `loss 5%`: rr 211 ms, lc
+  1.0 ms, lc-eject 1.0 ms. No failed requests in any run.

@@ -60,8 +60,9 @@ func (cc *clientConn) newRecord(start time.Time, req *http.Request) *accessRecor
 // connection's buffer and written in one call, byte for byte what slog's
 // JSON handler would write (TestAccessLineMatchesSlog). Through slog it
 // cost about 1.5 KB of garbage per request ([]slog.Attr and its growth)
-// and took the handler's mutex for every line; in Phase 9's profile that
-// was 41% of allocated bytes, 11% of CPU and 83% of mutex contention.
+// and took the handler's mutex for every line; in Phase 9's profiles that
+// was 41% of allocated bytes, 11% of CPU and half or more of all mutex
+// wait (47 to 83%).
 func (cc *clientConn) logAccess(r *accessRecord) {
 	total := time.Since(r.start)
 	cc.count(r, total)

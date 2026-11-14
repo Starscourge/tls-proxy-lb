@@ -15,6 +15,7 @@ package metrics
 
 import (
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"sync"
@@ -171,6 +172,12 @@ type poolEntry struct {
 	backends map[string]*BackendStats
 }
 
+// cpuClasses enables the runtime's CPU accounting (/cpu/classes/...) on top
+// of the Go collector's defaults: go_cpu_classes_gc_total_cpu_seconds_total
+// over go_cpu_classes_total_cpu_seconds_total is the garbage collector's
+// share of the process's CPU, which the Phase 9 benchmarks report.
+var cpuClasses = collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/cpu/classes/`)}
+
 // New returns a Metrics whose registry holds the proxy's metrics and the
 // Go runtime and process collectors.
 func New(src Sources) *Metrics {
@@ -187,7 +194,7 @@ func New(src Sources) *Metrics {
 	}
 	m.lastReloadOK.Store(true)
 	m.reg.MustRegister(
-		collectors.NewGoCollector(),
+		collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(cpuClasses)),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.latency,
 		collector{m},

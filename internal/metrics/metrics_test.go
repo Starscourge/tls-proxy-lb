@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,4 +281,27 @@ func TestHardeningCounters(t *testing.T) {
 	nilM.BadRequest(httpx.ReasonMalformed)
 	nilM.Panic()
 	nilM.AcceptError()
+}
+
+// TestGCCPUShare checks the runtime CPU classes the Phase 9 benchmarks read
+// the garbage collector's share of CPU from: both series exist, and after a
+// forced collection the GC's CPU is positive and no more than the total.
+func TestGCCPUShare(t *testing.T) {
+	m := New(Sources{})
+	runtime.GC()
+	gc, ok := value(t, m, "go_cpu_classes_gc_total_cpu_seconds_total", nil)
+	if !ok {
+		t.Fatal("go_cpu_classes_gc_total_cpu_seconds_total missing")
+	}
+	total, ok := value(t, m, "go_cpu_classes_total_cpu_seconds_total", nil)
+	if !ok {
+		t.Fatal("go_cpu_classes_total_cpu_seconds_total missing")
+	}
+	if gc <= 0 || gc > total {
+		t.Fatalf("gc %v s of total %v s", gc, total)
+	}
+	// The Go collector's defaults are still there.
+	if _, ok := value(t, m, "go_goroutines", nil); !ok {
+		t.Fatal("go_goroutines missing")
+	}
 }

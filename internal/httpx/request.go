@@ -16,7 +16,8 @@ type RequestLimits struct {
 // ReadRequest reads the next request from br and decides whether it may be
 // forwarded. br must read from lr, which the caller has already limited to
 // the header size (HeaderLimitReader.Limit) and which ReadRequest unlimits
-// once the header block is read. raw is a buffer reused across requests;
+// once the header block is read. After an error lr stays limited, so
+// lr.Exhausted still tells a block that was too large. raw is a buffer reused across requests;
 // it is left holding the header block as it arrived.
 //
 // It returns the parsed request and ReasonNone; or the request and why it
@@ -36,10 +37,11 @@ func ReadRequest(br *bufio.Reader, lr *HeaderLimitReader, raw *[]byte, lim Reque
 	*raw = append((*raw)[:0], buffered...)
 	lr.Record(raw)
 	req, err := http.ReadRequest(br)
-	lr.Unlimit()
 	if err != nil {
+		lr.Record(nil)
 		return nil, ReasonNone, err
 	}
+	lr.Unlimit()
 	if r := CheckRequest(req); r != ReasonNone {
 		return req, r, nil
 	}

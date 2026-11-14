@@ -124,7 +124,8 @@ func TestBodiesArriveIdentical(t *testing.T) {
 
 // TestThousandRequestsOneConnection: 1,000 sequential requests on one
 // keep-alive connection all succeed, and the proxy accepted exactly one
-// connection.
+// connection. The 1,000th is the last max_requests_per_conn allows by
+// default, so its response says Connection: close.
 func TestThousandRequestsOneConnection(t *testing.T) {
 	ForEachScheme(t, func(t *testing.T, scheme string) {
 		b := StartBackend(t, "b1", BackendOptions{})
@@ -139,7 +140,7 @@ func TestThousandRequestsOneConnection(t *testing.T) {
 				t.Fatalf("request %d: %v", i, err)
 			}
 			body, err := io.ReadAll(resp.Body)
-			if err != nil || resp.StatusCode != 200 || string(body) != "hello from b1\n" || resp.Close {
+			if err != nil || resp.StatusCode != 200 || string(body) != "hello from b1\n" || resp.Close != (i == 999) {
 				t.Fatalf("request %d: status %d close %v body %q err %v", i, resp.StatusCode, resp.Close, body, err)
 			}
 		}

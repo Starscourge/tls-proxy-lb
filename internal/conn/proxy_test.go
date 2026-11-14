@@ -70,6 +70,7 @@ func testTimeouts() config.Timeouts {
 		ClientIO:         5 * time.Second,
 		UpstreamConnect:  time.Second,
 		UpstreamResponse: 5 * time.Second,
+		BodyGrace:        5 * time.Second,
 	}
 }
 

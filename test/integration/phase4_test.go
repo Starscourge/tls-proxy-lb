@@ -51,7 +51,7 @@ func TestUpstreamReuseSteadyState(t *testing.T) {
 					errs <- err
 					return
 				}
-				defer c.Close()
+				defer func() { c.Close() }()
 				br := bufio.NewReader(c)
 				for !stop.Load() {
 					c.SetDeadline(time.Now().Add(10 * time.Second))
@@ -67,6 +67,16 @@ func TestUpstreamReuseSteadyState(t *testing.T) {
 						return
 					}
 					requests.Add(1)
+					if resp.Close {
+						// max_requests_per_conn reached: a new client
+						// connection, as a real client would open.
+						c.Close()
+						if c, err = p.DialErr("a.test", nil); err != nil {
+							errs <- err
+							return
+						}
+						br.Reset(c)
+					}
 				}
 			})
 		}

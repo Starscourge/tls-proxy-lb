@@ -36,6 +36,9 @@ const (
 	// writerGrace bounds the wait, once a response is complete, for a
 	// request writer that is still running (bodyWriter.finished).
 	writerGrace = 50 * time.Millisecond
+	// maxKeptRaw is the largest header-block buffer a connection keeps
+	// between requests.
+	maxKeptRaw = 16 << 10
 )
 
 // StatusClientClosed is logged (never sent) when the client goes away before
@@ -175,6 +178,11 @@ type clientConn struct {
 	dw httpx.DeadlineWriter
 	bw *bufio.Writer
 
+	// raw holds the current request's header block as it arrived, for
+	// httpx.CheckRaw. requests counts the requests read on the connection.
+	raw      []byte
+	requests int64
+
 	// linger is set when unread request bytes may be left on the
 	// connection, so it must be closed with a drain.
 	linger bool
@@ -267,7 +275,12 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	if err := cc.c.SetReadDeadline(headerDeadline); err != nil {
 		return false
 	}
-	req, err := http.ReadRequest(cc.br)
+	req, reason, err := httpx.ReadRequest(cc.br, &cc.lr, &cc.raw, snap.Limits.Request())
+	// A large header block grows raw; a connection does not keep that
+	// much memory between requests.
+	if cap(cc.raw) > maxKeptRaw {
+		cc.raw = nil
+	}
 	if err != nil {
 		// A deadline hit mid-line can surface as a parse error of the
 		// partial line rather than a timeout, so the clock decides.
@@ -275,10 +288,10 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 		cc.headerError(start, err, timedOut)
 		return false
 	}
-	cc.lr.Unlimit()
-
-	if r := httpx.CheckRequest(req); r != httpx.ReasonNone {
-		return cc.reject(cc.newRecord(start, req), req, r.Status(), r.String())
+	cc.requests++
+	if reason != httpx.ReasonNone {
+		cc.p.Metrics.BadRequest(reason)
+		return cc.reject(cc.newRecord(start, req), req, reason.Status(), reason.String())
 	}
 	if cc.redirectPort != 0 {
 		return cc.redirect(snap, req, start)
@@ -302,6 +315,7 @@ func (cc *clientConn) headerError(start time.Time, err error, timedOut bool) {
 	switch {
 	case cc.lr.Exhausted():
 		rec.status = http.StatusRequestHeaderFieldsTooLarge
+		cc.p.Metrics.BadRequest(httpx.ReasonHeaderTooLarge)
 	case timedOut:
 		// A client that stalls mid-header gets no reply, only a close.
 		rec.status = http.StatusRequestTimeout
@@ -313,6 +327,7 @@ func (cc *clientConn) headerError(start time.Time, err error, timedOut bool) {
 		return
 	default:
 		rec.status = http.StatusBadRequest
+		cc.p.Metrics.BadRequest(httpx.ReasonMalformed)
 	}
 	cc.linger = true
 	cc.writeError(rec.status, false)
@@ -327,6 +342,10 @@ func (cc *clientConn) headerError(start time.Time, err error, timedOut bool) {
 func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *http.Request, start time.Time) bool {
 	rec := cc.newRecord(start, req)
 	clientKeepAlive := !req.Close && req.ProtoAtLeast(1, 1)
+	if max := snap.Limits.MaxRequestsPerConn; max > 0 && cc.requests >= max {
+		// The connection's last request: its response says so.
+		clientKeepAlive = false
+	}
 	head := req.Method == http.MethodHead
 
 	if reason := cc.misdirected(snap, req.Host); reason != "" {
@@ -367,6 +386,8 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 		cc.reqFlush = flushingReader{r: req.Body, src: cc.br, wrap: wrapUpstreamErr}
 		reqBody = &cc.reqBody
 		reqBody.Reset(&cc.reqFlush, cc.c, cc.t.ClientIO)
+		reqBody.SetLimits(snap.Limits.MaxBodyBytes, snap.Limits.MinBodyRate, time.Now(), snap.Timeouts.BodyGrace)
+		reqBody.SetRequest(req)
 		req.Body = reqBody
 	}
 	cc.interimSent = false
@@ -811,6 +832,10 @@ func (cc *clientConn) responseError(rec *accessRecord, reqBody *httpx.Body, writ
 // as a malformed chunk.
 func clientFailureStatus(err error) int {
 	switch {
+	case errors.Is(err, httpx.ErrBodyTooLarge):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, httpx.ErrBodyTooSlow):
+		return http.StatusRequestTimeout
 	case isTimeout(err):
 		return http.StatusRequestTimeout
 	case isClientGone(err):

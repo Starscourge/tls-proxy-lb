@@ -125,7 +125,8 @@ bench:                   # against nginx: 3 scenarios x 3 concurrencies x 3 runs
 	bench/phase9/bench.sh
 bench-gc:                # GOGC and GOMEMLIMIT settings: GC share of CPU, p99, memory; about 20 min
 	bench/phase9/gc.sh
-HOTSPOTS_BEFORE ?=
+# The commit before the profile-guided change (the access line, 4418151).
+HOTSPOTS_BEFORE ?= a42e412
 bench-hotspots:          # profiles, and the proxy before and after the profile-guided changes; about 15 min
 	bench/phase9/hotspots.sh $(HOTSPOTS_BEFORE)
 demo-kill:               # docker kill one of three backends under k6 at 1,000 req/s, then start it

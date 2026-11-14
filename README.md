@@ -47,7 +47,9 @@ keep-alive the proxy spends about 20% more CPU per request than nginx (66
 µs against 54 µs at 50 connections). Its profile has no single hotspot
 left: over half its CPU is the kernel's loopback send and receive, and
 the rest is spread thinly over TLS, `net/http`'s parsers, deadlines and
-the access log.
+the access log. Nor is the gap the garbage collector, which takes 1.2 to
+2.1% of the proxy's CPU on 1 KB keep-alive; most of what the proxy still
+allocates (2.2 KB a request) is inside `net/http`'s parsers.
 
 ![p99 latency against nginx](bench/phase9/results/bench/bench-latency.svg)
 

@@ -152,6 +152,10 @@ type Metrics struct {
 
 	unrouted Codes
 
+	// reloads counts config reloads by outcome: [0] failed, [1] applied.
+	reloads      [2]atomic.Uint64
+	lastReloadOK atomic.Bool
+
 	mu          sync.Mutex
 	pools       map[string]*poolEntry
 	rateLimited map[string]*atomic.Uint64
@@ -176,6 +180,7 @@ func New(src Sources) *Metrics {
 		pools:       make(map[string]*poolEntry),
 		rateLimited: make(map[string]*atomic.Uint64),
 	}
+	m.lastReloadOK.Store(true)
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -227,6 +232,53 @@ func (m *Metrics) RateLimited(route string) *atomic.Uint64 {
 		m.rateLimited[route] = c
 	}
 	return c
+}
+
+// Reload records the outcome of a config reload.
+func (m *Metrics) Reload(ok bool) {
+	i := 0
+	if ok {
+		i = 1
+	}
+	m.reloads[i].Add(1)
+	m.lastReloadOK.Store(ok)
+}
+
+// Reloads returns how many config reloads were applied (ok) or failed.
+func (m *Metrics) Reloads(ok bool) uint64 {
+	if ok {
+		return m.reloads[1].Load()
+	}
+	return m.reloads[0].Load()
+}
+
+// Retain drops the stats of every pool not in pools, of every backend not
+// listed under its pool, and of every route not in routes ("" being the
+// default pool's), after a reload removed them. Their series leave
+// /metrics, as their health and upstream series do. A request still in
+// flight on the old config counts into the dropped stats, and a pool,
+// backend or route that comes back starts from zero.
+func (m *Metrics) Retain(pools map[string][]string, routes []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, e := range m.pools {
+		addrs, ok := pools[name]
+		if !ok {
+			delete(m.pools, name)
+			m.latency.DeleteLabelValues(name)
+			continue
+		}
+		for addr := range e.backends {
+			if !slices.Contains(addrs, addr) {
+				delete(e.backends, addr)
+			}
+		}
+	}
+	for route := range m.rateLimited {
+		if !slices.Contains(routes, route) {
+			delete(m.rateLimited, route)
+		}
+	}
 }
 
 // Unrouted counts responses to requests that reached no pool: 400, 404,
@@ -291,6 +343,11 @@ var (
 		"The most client token buckets the rate-limit table holds.", nil, nil)
 	descRateLimitEvictions = prometheus.NewDesc("proxy_rate_limit_evictions_total",
 		"Buckets dropped before they had refilled, to keep the table under its cap.", nil, nil)
+	descReloads = prometheus.NewDesc("proxy_config_reloads_total",
+		"Config reloads on SIGHUP, by result: success (applied) or failure (the old config kept serving).",
+		[]string{"result"}, nil)
+	descLastReloadOK = prometheus.NewDesc("proxy_config_last_reload_successful",
+		"1 if the last config reload was applied, or none has been tried; 0 if it failed.", nil, nil)
 )
 
 // collector reads Metrics' stats and its Sources at scrape time. It is
@@ -310,6 +367,13 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	m.unrouted.each(func(code string, n uint64) { counter(descRequests, n, "", "", code) })
+	counter(descReloads, m.reloads[1].Load(), "success")
+	counter(descReloads, m.reloads[0].Load(), "failure")
+	lastOK := 0.0
+	if m.lastReloadOK.Load() {
+		lastOK = 1
+	}
+	gauge(descLastReloadOK, lastOK)
 	m.mu.Lock()
 	names := make([]string, 0, len(m.pools))
 	for name := range m.pools {

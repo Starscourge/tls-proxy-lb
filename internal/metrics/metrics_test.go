@@ -210,3 +210,54 @@ func TestCollectWithoutSources(t *testing.T) {
 		t.Fatal("nil Metrics returned an unrouted counter")
 	}
 }
+
+func TestReloadCounters(t *testing.T) {
+	m := New(Sources{})
+	want(t, m, "proxy_config_last_reload_successful", nil, 1)
+	want(t, m, "proxy_config_reloads_total", map[string]string{"result": "failure"}, 0)
+	m.Reload(false)
+	want(t, m, "proxy_config_reloads_total", map[string]string{"result": "failure"}, 1)
+	want(t, m, "proxy_config_last_reload_successful", nil, 0)
+	m.Reload(true)
+	m.Reload(true)
+	want(t, m, "proxy_config_reloads_total", map[string]string{"result": "success"}, 2)
+	want(t, m, "proxy_config_last_reload_successful", nil, 1)
+	if m.Reloads(true) != 2 || m.Reloads(false) != 1 {
+		t.Fatalf("Reloads: %d applied, %d failed", m.Reloads(true), m.Reloads(false))
+	}
+}
+
+// Retain drops removed pools, backends and routes from /metrics and keeps
+// the rest with their counts.
+func TestRetain(t *testing.T) {
+	m := New(Sources{})
+	m.Backend("web", "10.0.0.1:80").Codes.Add(200)
+	m.Backend("web", "10.0.0.2:80").Codes.Add(200)
+	m.Backend("old", "10.0.0.3:80").Codes.Add(200)
+	m.Pool("old").Latency.Observe(0.1)
+	m.Pool("web").Latency.Observe(0.1)
+	m.RateLimited("a.test").Add(1)
+	m.RateLimited("b.test").Add(1)
+
+	m.Retain(map[string][]string{"web": {"10.0.0.1:80"}}, []string{"a.test"})
+	want(t, m, "proxy_requests_total", map[string]string{"pool": "web", "backend": "10.0.0.1:80"}, 1)
+	want(t, m, "proxy_rate_limited_requests_total", map[string]string{"route": "a.test"}, 1)
+	want(t, m, "proxy_request_duration_seconds_count", map[string]string{"pool": "web"}, 1)
+	for _, gone := range []struct {
+		name   string
+		labels map[string]string
+	}{
+		{"proxy_requests_total", map[string]string{"backend": "10.0.0.2:80"}},
+		{"proxy_requests_total", map[string]string{"pool": "old"}},
+		{"proxy_retries_total", map[string]string{"pool": "old"}},
+		{"proxy_request_duration_seconds_count", map[string]string{"pool": "old"}},
+		{"proxy_rate_limited_requests_total", map[string]string{"route": "b.test"}},
+	} {
+		if _, ok := value(t, m, gone.name, gone.labels); ok {
+			t.Errorf("%s%v still exported", gone.name, gone.labels)
+		}
+	}
+	if m.Backend("web", "10.0.0.2:80").Codes.Get(200) != 0 {
+		t.Fatal("a returning backend kept its old counts")
+	}
+}

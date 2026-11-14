@@ -43,15 +43,15 @@ type Server struct {
 	loops     sync.WaitGroup
 }
 
-// NewServer returns a server that admits at most maxConns connections at
-// once across all its listeners (no cap if <= 0). A nil logger discards.
-func NewServer(maxConns int, logger *slog.Logger) *Server {
+// NewServer returns a server that enforces limits across all its listeners
+// (see Limits). A nil logger discards.
+func NewServer(limits Limits, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		tracker:   NewTracker(maxConns),
+		tracker:   NewTracker(limits),
 		logger:    logger,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -103,8 +103,17 @@ func (s *Server) Serve(ln net.Listener, h Handler) error {
 			}
 			continue
 		}
-		tc, ok := s.tracker.Add(c)
-		if !ok {
+		tc, reason := s.tracker.Add(c)
+		switch reason {
+		case RejectNone:
+		case RejectPerIP:
+			// One client at its own cap is routine under abuse, and
+			// counted in the metrics; logging each refusal would let it
+			// flood the log.
+			s.logger.Debug("connection refused: at per-IP connection cap", "remote", c.RemoteAddr().String())
+			c.Close()
+			continue
+		default:
 			// Over the cap (or closing): refuse at once rather than queue.
 			s.logger.Warn("connection refused: at connection cap", "remote", c.RemoteAddr().String())
 			c.Close()

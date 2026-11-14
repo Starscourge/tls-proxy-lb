@@ -131,7 +131,7 @@ func benchProxy(b *testing.B, backend string, reuse bool) string {
 		b.Fatal(err)
 	}
 	p := &Proxy{Config: config.NewStore(snap), Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)), Metrics: m}
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		b.Fatal(err)

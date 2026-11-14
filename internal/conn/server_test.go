@@ -21,7 +21,7 @@ func (h *echoHandler) ServeConn(_ context.Context, c *TrackedConn) {
 
 func startServer(t *testing.T, h Handler, maxConns int) (*Server, string, chan error) {
 	t.Helper()
-	s := NewServer(maxConns, nil)
+	s := NewServer(Limits{MaxConns: maxConns}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestServerConnectionCap(t *testing.T) {
 }
 
 func TestServeAfterClose(t *testing.T) {
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	s.Close()
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	if err := s.Serve(ln, &echoHandler{}); !errors.Is(err, ErrServerClosed) {

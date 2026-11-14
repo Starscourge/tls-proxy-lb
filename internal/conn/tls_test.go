@@ -88,7 +88,7 @@ backends = [{ address = %q }]
 		Logger: slog.New(slog.NewJSONHandler(f.logs, nil)),
 		TLS:    tlsx.ServerConfig(func() *tlsx.CertSet { return store.Load().Certs }),
 	}
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

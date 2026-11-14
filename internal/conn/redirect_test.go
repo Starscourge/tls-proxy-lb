@@ -20,7 +20,7 @@ func startRedirect(t *testing.T, src string, port int) (string, *logBuf) {
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestRedirectHeaderTimeout(t *testing.T) {
 	c := parseConfig(t, redirectRoutes)
 	c.Timeouts.HeaderRead = 300 * time.Millisecond
 	r := NewRedirect(config.NewStore(newSnapshot(t, c)), slog.New(slog.NewJSONHandler(logs, nil)), 443)
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	errc := make(chan error, 1)
 	go func() { errc <- s.Serve(ln, r) }()

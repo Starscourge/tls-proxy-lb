@@ -4,9 +4,12 @@ package conn
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 )
 
 // State is where a tracked connection is in its life.
@@ -40,7 +43,16 @@ type TrackedConn struct {
 	id      uint64
 	started time.Time
 	state   atomic.Int32
+	// peer is the remote IP, unmapped; invalid for a connection that is
+	// not TCP. perIP is its key in the tracker's per-IP counts, invalid if
+	// the connection is not counted there.
+	peer  netip.Addr
+	perIP netip.Addr
 }
+
+// Peer returns the remote IP address, IPv4-mapped addresses unmapped. It is
+// the zero Addr for a connection that is not over IP, such as a pipe.
+func (c *TrackedConn) Peer() netip.Addr { return c.peer }
 
 // ID returns the tracker-assigned connection number, unique per tracker.
 func (c *TrackedConn) ID() uint64 { return c.id }
@@ -60,44 +72,103 @@ type ConnInfo struct {
 	State   State
 }
 
-// Tracker counts and lists open client connections and enforces the cap on
+// Limits are the caps a Tracker enforces at accept.
+type Limits struct {
+	// MaxConns is the most connections open at once. Zero means no cap.
+	MaxConns int
+	// MaxPerIP is the most connections open at once from one address, an
+	// IPv6 address counting as its /64 (ratelimit.KeyAddr). It stops one
+	// client from taking every slot and spending the handshake CPU. Zero
+	// means no cap.
+	MaxPerIP int
+	// Exempt are addresses MaxPerIP does not apply to: trusted proxies,
+	// which carry many clients' connections.
+	Exempt ratelimit.Trusted
+}
+
+// RejectReason is why Add turned a connection away.
+type RejectReason int
+
+// The reject reasons.
+const (
+	// RejectNone: the connection was admitted.
+	RejectNone RejectReason = iota
+	// RejectMaxConns: the tracker was at MaxConns, or closed.
+	RejectMaxConns
+	// RejectPerIP: the client's address was at MaxPerIP.
+	RejectPerIP
+	numRejectReasons
+)
+
+var rejectReasonNames = [numRejectReasons]string{"", "max_conns", "per_ip"}
+
+func (r RejectReason) String() string { return rejectReasonNames[r] }
+
+// Tracker counts and lists open client connections and enforces the caps on
 // them. It is shared by the accept loop, which adds connections, and the
 // connection goroutines, which remove themselves; a mutex guards the set and
-// atomics hold the counters.
+// the per-IP counts, and atomics hold the counters.
 type Tracker struct {
-	max int
+	limits Limits
 
 	mu     sync.Mutex
 	conns  map[*TrackedConn]struct{}
+	perIP  map[netip.Addr]int
 	closed bool
 	wg     sync.WaitGroup
 
 	nextID   atomic.Uint64
 	accepted atomic.Uint64
-	rejected atomic.Uint64
+	rejected [numRejectReasons]atomic.Uint64
 }
 
-// NewTracker returns a tracker that admits at most max connections at once.
-// max <= 0 means no cap.
-func NewTracker(max int) *Tracker {
-	return &Tracker{max: max, conns: make(map[*TrackedConn]struct{})}
+// NewTracker returns a tracker that enforces l.
+func NewTracker(l Limits) *Tracker {
+	return &Tracker{limits: l, conns: make(map[*TrackedConn]struct{}), perIP: make(map[netip.Addr]int)}
 }
 
 // Add registers c. It returns false, and registers nothing, if the tracker is
-// at its cap or closed; the caller then closes c. Every successful Add must
-// be matched by one Remove.
-func (t *Tracker) Add(c net.Conn) (*TrackedConn, bool) {
+// at a cap or closed, with the reason; the caller then closes c. Every
+// successful Add must be matched by one Remove.
+func (t *Tracker) Add(c net.Conn) (*TrackedConn, RejectReason) {
+	peer := remoteIP(c)
+	var key netip.Addr
+	if t.limits.MaxPerIP > 0 && peer.IsValid() && !t.limits.Exempt.Contains(peer) {
+		key = ratelimit.KeyAddr(peer)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || (t.max > 0 && len(t.conns) >= t.max) {
-		t.rejected.Add(1)
-		return nil, false
+	if t.closed || (t.limits.MaxConns > 0 && len(t.conns) >= t.limits.MaxConns) {
+		t.rejected[RejectMaxConns].Add(1)
+		return nil, RejectMaxConns
 	}
-	tc := &TrackedConn{Conn: c, id: t.nextID.Add(1), started: time.Now()}
+	if key.IsValid() {
+		if t.perIP[key] >= t.limits.MaxPerIP {
+			t.rejected[RejectPerIP].Add(1)
+			return nil, RejectPerIP
+		}
+		t.perIP[key]++
+	}
+	tc := &TrackedConn{Conn: c, id: t.nextID.Add(1), started: time.Now(), peer: peer, perIP: key}
 	t.conns[tc] = struct{}{}
 	t.wg.Add(1)
 	t.accepted.Add(1)
-	return tc, true
+	return tc, RejectNone
+}
+
+// remoteIP returns c's remote IP, unmapped, or the zero Addr.
+func remoteIP(c net.Conn) netip.Addr {
+	switch a := c.RemoteAddr().(type) {
+	case *net.TCPAddr:
+		return a.AddrPort().Addr().Unmap()
+	case nil:
+		return netip.Addr{}
+	default:
+		if ap, err := netip.ParseAddrPort(a.String()); err == nil {
+			return ap.Addr().Unmap()
+		}
+		return netip.Addr{}
+	}
 }
 
 // Remove unregisters tc. It does not close it.
@@ -106,10 +177,25 @@ func (t *Tracker) Remove(tc *TrackedConn) {
 	t.mu.Lock()
 	_, ok := t.conns[tc]
 	delete(t.conns, tc)
+	if ok && tc.perIP.IsValid() {
+		if n := t.perIP[tc.perIP] - 1; n > 0 {
+			t.perIP[tc.perIP] = n
+		} else {
+			delete(t.perIP, tc.perIP)
+		}
+	}
 	t.mu.Unlock()
 	if ok {
 		t.wg.Done()
 	}
+}
+
+// ConnsFrom returns the number of open connections counted against a's
+// per-IP cap.
+func (t *Tracker) ConnsFrom(a netip.Addr) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.perIP[ratelimit.KeyAddr(a)]
 }
 
 // Len returns the number of open connections.
@@ -122,8 +208,18 @@ func (t *Tracker) Len() int {
 // Accepted returns how many connections Add admitted in total.
 func (t *Tracker) Accepted() uint64 { return t.accepted.Load() }
 
-// Rejected returns how many connections Add turned away.
-func (t *Tracker) Rejected() uint64 { return t.rejected.Load() }
+// Rejected returns how many connections Add turned away, for any reason.
+func (t *Tracker) Rejected() uint64 {
+	return t.rejected[RejectMaxConns].Load() + t.rejected[RejectPerIP].Load()
+}
+
+// RejectedFor returns how many connections Add turned away for reason.
+func (t *Tracker) RejectedFor(reason RejectReason) uint64 {
+	if reason <= RejectNone || reason >= numRejectReasons {
+		return 0
+	}
+	return t.rejected[reason].Load()
+}
 
 // List returns a description of every open connection, in no fixed order.
 func (t *Tracker) List() []ConnInfo {

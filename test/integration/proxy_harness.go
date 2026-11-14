@@ -210,7 +210,7 @@ func StartProxyDir(t testing.TB, dir string, ca *tlstest.CA, body string, opts P
 		OnEject: func(addr string) { reg.Pool(addr).Flush() },
 	})
 	t.Cleanup(chk.Close)
-	srv := conn.NewServer(cfg.Limits.MaxConns, logger)
+	srv := conn.NewServer(conn.Limits{MaxConns: cfg.Limits.MaxConns, MaxPerIP: cfg.Limits.MaxConnsPerIP, Exempt: cfg.TrustedProxies}, logger)
 	m := metrics.New(metrics.Sources{Upstream: reg, Health: chk, ClientConns: srv.Tracker().Len})
 	snap, err := config.NewSnapshot(cfg, config.Runtime{Conns: reg, Health: chk, Metrics: m})
 	if err != nil {

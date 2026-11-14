@@ -125,7 +125,7 @@ func startProxyWith(t *testing.T, snap *config.Snapshot, mut func(*Proxy)) (stri
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(0, nil)
+	s := NewServer(Limits{}, nil)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

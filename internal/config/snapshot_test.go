@@ -392,3 +392,42 @@ backends = [{ address = "127.0.0.1:8000" }]
 		t.Fatal("without a runtime a backend must be always healthy and still have stats")
 	}
 }
+
+func TestSnapshotAddrsAndRoutes(t *testing.T) {
+	s := mustSnapshot(t, fullConfig)
+	if got, want := s.Addrs(), []string{"10.0.0.11:8000", "10.0.0.12:8000", "[::1]:9000", "backend_3:8000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Addrs %v, want %v", got, want)
+	}
+	want := map[string][]string{
+		"pool_a": {"10.0.0.11:8000", "10.0.0.12:8000"},
+		"pool_b": {"backend_3:8000"},
+		"pool_c": {"[::1]:9000"},
+	}
+	if got := s.Backends(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Backends %v, want %v", got, want)
+	}
+	if got, want := s.Routes(), []string{"", "::1", "a.test"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Routes %q, want %q", got, want)
+	}
+}
+
+func TestSnapshotAddrsShared(t *testing.T) {
+	s := mustSnapshot(t, `
+[pool.a]
+backends = [{ address = "10.0.0.1:80" }, { address = "10.0.0.2:80" }]
+[pool.b]
+backends = [{ address = "10.0.0.2:80" }]
+[[route]]
+host = "a.test"
+pool = "a"
+[[listener]]
+address = "127.0.0.1:0"
+mode = "http"
+`)
+	if got, want := s.Addrs(), []string{"10.0.0.1:80", "10.0.0.2:80"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Addrs %v, want %v", got, want)
+	}
+	if got := s.Routes(); !reflect.DeepEqual(got, []string{"a.test"}) {
+		t.Fatalf("Routes %q without a default pool", got)
+	}
+}

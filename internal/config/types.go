@@ -164,15 +164,15 @@ func (t Timeouts) Validate() error {
 // Limits caps resources per process and per request.
 type Limits struct {
 	// MaxConns is the most client connections open at once; more are
-	// closed at accept. It applies from startup and is not reloaded.
+	// closed at accept. A reload applies it to later accepts.
 	MaxConns int
 	// MaxHeaderBytes caps a request's line plus headers; larger requests
 	// get 431.
 	MaxHeaderBytes int
 	// MaxConnsPerIP is the most client connections open at once from one
 	// address (an IPv6 /64), checked at accept before the TLS handshake.
-	// Trusted proxies are exempt. Zero means no cap. Like MaxConns it
-	// applies from startup and is not reloaded.
+	// Trusted proxies are exempt. Zero means no cap. Like MaxConns, a
+	// reload applies it to later accepts.
 	MaxConnsPerIP int
 }
 
@@ -252,4 +252,36 @@ type Log struct {
 // DefaultLog returns the log settings used when the file sets none.
 func DefaultLog() Log {
 	return Log{BufferBytes: 64 << 10, FlushInterval: time.Second}
+}
+
+// KeepStartup copies into c the settings that apply from startup and are
+// not reloaded, from running, the config the process is using, and
+// returns the file keys of those that c had changed. A reload calls it
+// before building the new snapshot, so the snapshot holds the values in
+// force, and logs the keys: they apply after a restart.
+//
+// Startup-only: [admin] and [log] (the admin listener and the log buffer
+// are made once), [health] (the probers' settings), upstream
+// max_idle_per_backend and idle_timeout_ms (the connection pools'), and
+// rate_limit max_entries and sweep_ms (the bucket table's).
+func (c *Config) KeepStartup(running *Config) []string {
+	var changed []string
+	keep := func(key string, differs bool, restore func()) {
+		if differs {
+			changed = append(changed, key)
+			restore()
+		}
+	}
+	keep("admin", c.Admin != running.Admin, func() { c.Admin = running.Admin })
+	keep("log", c.Log != running.Log, func() { c.Log = running.Log })
+	keep("health", c.Health != running.Health, func() { c.Health = running.Health })
+	keep("upstream.max_idle_per_backend", c.Upstream.MaxIdlePerBackend != running.Upstream.MaxIdlePerBackend,
+		func() { c.Upstream.MaxIdlePerBackend = running.Upstream.MaxIdlePerBackend })
+	keep("upstream.idle_timeout_ms", c.Upstream.IdleTimeout != running.Upstream.IdleTimeout,
+		func() { c.Upstream.IdleTimeout = running.Upstream.IdleTimeout })
+	keep("rate_limit.max_entries", c.RateLimit.MaxEntries != running.RateLimit.MaxEntries,
+		func() { c.RateLimit.MaxEntries = running.RateLimit.MaxEntries })
+	keep("rate_limit.sweep_ms", c.RateLimit.Sweep != running.RateLimit.Sweep,
+		func() { c.RateLimit.Sweep = running.RateLimit.Sweep })
+	return changed
 }

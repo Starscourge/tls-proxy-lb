@@ -233,6 +233,45 @@ func (s *Snapshot) Pools() []*lb.Pool {
 	return out
 }
 
+// Backends returns each pool's backend addresses, by pool name.
+func (s *Snapshot) Backends() map[string][]string {
+	out := make(map[string][]string, len(s.pools))
+	for name, p := range s.pools {
+		addrs := make([]string, len(p.Backends))
+		for i, b := range p.Backends {
+			addrs[i] = b.Addr
+		}
+		out[name] = addrs
+	}
+	return out
+}
+
+// Addrs returns every backend address in any pool, once each, sorted.
+func (s *Snapshot) Addrs() []string {
+	var out []string
+	for _, p := range s.pools {
+		for _, b := range p.Backends {
+			out = append(out, b.Addr)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// Routes returns the host of every route, and "" if there is a default
+// pool: the names rate limits and their metrics are kept under.
+func (s *Snapshot) Routes() []string {
+	out := make([]string, 0, len(s.routes)+1)
+	for host := range s.routes {
+		out = append(out, host)
+	}
+	if s.def != nil {
+		out = append(out, "")
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Pool returns the pool with the given name, or nil.
 func (s *Snapshot) Pool(name string) *lb.Pool { return s.pools[name] }
 

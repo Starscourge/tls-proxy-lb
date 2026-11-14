@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -468,4 +469,51 @@ func TestTimeoutsValidate(t *testing.T) {
 	if err := to.Validate(); err == nil || !strings.Contains(err.Error(), "Shutdown") {
 		t.Fatalf("negative shutdown: got %v", err)
 	}
+}
+
+// KeepStartup restores the startup-only settings and names the changed
+// ones; everything else keeps the new value.
+func TestKeepStartup(t *testing.T) {
+	running := mustParse(t, fullConfig)
+	same := mustParse(t, fullConfig)
+	if got := same.KeepStartup(running); len(got) != 0 {
+		t.Fatalf("unchanged config reports %v", got)
+	}
+
+	next := mustParse(t, fullConfig)
+	next.Admin.Address = "127.0.0.1:9999"
+	next.Log.BufferBytes++
+	next.Health.Interval *= 2
+	next.Upstream.MaxIdlePerBackend++
+	next.Upstream.IdleTimeout++
+	next.Upstream.MaxRetries = 0
+	next.RateLimit.MaxEntries++
+	next.RateLimit.Sweep++
+	next.RateLimit.Default.Rate = 99
+	next.Limits.MaxConns = 7
+	next.Timeouts.Shutdown = time.Second
+	got := next.KeepStartup(running)
+	want := []string{"admin", "log", "health", "upstream.max_idle_per_backend", "upstream.idle_timeout_ms",
+		"rate_limit.max_entries", "rate_limit.sweep_ms"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("changed %v, want %v", got, want)
+	}
+	if next.Admin != running.Admin || next.Log != running.Log || next.Health != running.Health ||
+		next.Upstream.MaxIdlePerBackend != running.Upstream.MaxIdlePerBackend ||
+		next.Upstream.IdleTimeout != running.Upstream.IdleTimeout ||
+		next.RateLimit.MaxEntries != running.RateLimit.MaxEntries || next.RateLimit.Sweep != running.RateLimit.Sweep {
+		t.Fatal("a startup-only setting kept its new value")
+	}
+	if next.Upstream.MaxRetries != 0 || next.RateLimit.Default.Rate != 99 || next.Limits.MaxConns != 7 || next.Timeouts.Shutdown != time.Second {
+		t.Fatal("a reloadable setting lost its new value")
+	}
+}
+
+func mustParse(t *testing.T, src string) *Config {
+	t.Helper()
+	c, err := Parse("test.toml", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }

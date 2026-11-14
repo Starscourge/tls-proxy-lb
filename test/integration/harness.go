@@ -49,6 +49,9 @@ type BackendOptions struct {
 	// test output, for tests that send thousands of requests. The in-memory
 	// request log is kept either way.
 	Quiet bool
+	// NoRecord turns the in-memory request log off, for tests that
+	// measure memory across thousands of requests.
+	NoRecord bool
 }
 
 // StartBackends starts n backends named b1..bn, each recording its requests
@@ -95,7 +98,7 @@ func (b *Backend) start(addr string) {
 		FailRate:    b.opts.FailRate,
 		HealthzFail: b.opts.HealthzFail,
 		Logger:      logger,
-		Record:      true,
+		Record:      !b.opts.NoRecord,
 	})
 	if err != nil {
 		t.Fatalf("testbackend %s: %v", b.name, err)

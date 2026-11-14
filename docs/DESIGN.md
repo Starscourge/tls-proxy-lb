@@ -1476,3 +1476,285 @@ On the development machine (WSL2, Core Ultra 7 155H):
   req/s for random clients: 169.5 ms of mutex wait in 10 s, 1.62 ms
   (0.96%) of it in the rate limiter. The largest site is the access log's
   `slog` handler (83%), as in Phase 4.
+
+## Phase 7: Hot reload and graceful shutdown
+
+### `internal/app` owns the process; `main` owns the signals
+
+Everything `cmd/proxy`'s `run` used to build (registry, checker,
+rate-limit table, metrics, connection server, snapshot store, listeners,
+admin server) moved into `app.App`, with `New`, `Start`, `Reload` and
+`Shutdown`. `main` is left with flags and one loop on its own goroutine
+that reads a `signal.Notify` channel: `SIGHUP` calls `Reload`, `SIGTERM`
+and `SIGINT` call `Shutdown`, and a listener that fails on its own (on
+`App.Errors`) shuts down too and exits 1. The reason is testing: the
+reload and drain logic is driven in-process by `internal/app` and the
+Phase 7 integration tests, and only the signal wiring needs a subprocess
+(`cmd/proxy/signal_test.go`). `Reload` and `Shutdown` take one mutex, so
+two reloads, or a reload and a shutdown, never interleave. The channel
+holds four signals, so a `SIGTERM` that arrives during a reload is not
+lost.
+
+The integration harness from earlier phases still wires the proxy by
+hand; moving it onto `App` would touch every earlier test for no gain in
+coverage.
+
+### Reload: build everything, then one pointer swap
+
+Each step that can fail runs before anything changes:
+
+1. `config.Load`: parse and validate. A broken file fails here.
+2. `KeepStartup` (below), then `NewSnapshot`: pools, balancers, rings,
+   limiters, and every certificate read from disk. A missing or
+   mismatched certificate fails here.
+3. Open sockets for the listeners the new file adds. A busy port fails
+   here.
+
+Then the swap, which cannot fail: `Store.Store(snap)`, the tracker's new
+limits, new handlers for kept listeners, accept loops for added ones,
+`CloseListener` for removed ones. A request loads the snapshot pointer
+once, at its first byte, and keeps that snapshot to its end, so a request
+in flight finishes on the old config and the next one on any connection
+uses the new. Readers take no lock: the pointer is one atomic load, the
+snapshot is never written after `NewSnapshot`, and the garbage collector
+keeps the old snapshot alive for exactly as long as a request's stack
+still points at it.
+
+Last, whatever happened, `retain` makes the process-wide state match the
+snapshot in force: `Checker.Sync` stops the probers of removed addresses,
+`Registry.Retain` closes their idle connections and drops their pools,
+and `Metrics.Retain` drops their series. Running this after a failed
+reload matters because step 2 already created health targets and pools
+for the new file's addresses; without it a broken config naming new
+backends would leave probers running for them.
+
+A failure is logged at error level with the reason, counted in
+`proxy_config_reloads_total{result="failure"}`, and sets
+`proxy_config_last_reload_successful` to 0 until the next good reload,
+the same pair Prometheus exposes for its own config.
+
+### What carries across a reload, and why it is free
+
+Earlier phases put the state that should outlive a snapshot outside it,
+keyed by name, so a rebuilt snapshot finds it again:
+
+| State | Kept in | Key |
+| --- | --- | --- |
+| Health state and its prober | `health.Checker` | backend address |
+| Idle upstream connections | `upstream.Registry` | backend address |
+| In-flight count, request counts | `metrics.Metrics` | pool name, backend address |
+| Token buckets | `ratelimit.Table` | route host, client address |
+| TLS session ticket keys | the one `tls.Config` | process |
+
+PLAN.md's Phase 2 note expected the new snapshot to be built from the old
+one, reusing `lb.Backend` values. That was not needed: the in-flight
+counter lives in the metrics stats, which `NewSnapshot` already fetches by
+pool and address, so a backend in both configs gets the same counter and
+least-connections sees the requests still running on the old snapshot.
+`TestReloadCarriesBackendState` checks every one of these by identity.
+
+A backend removed and added again (the alternating test does this every
+second) starts fresh: a new prober, which treats it as healthy and checks
+at once, an empty idle pool, and counters from zero.
+
+### Removed backends: dropped, not kept
+
+A removed address's prober stops, its idle connections close and its
+series leave `/metrics`, so `/metrics` and `/status` show only what is
+configured. The cost: a request still in flight on the old snapshot
+counts into stats nothing exports, and a backend that comes back has its
+counters reset, which Prometheus reads as a counter reset (`rate()`
+handles it). Keeping removed backends' series forever was the alternative;
+it makes `/metrics` grow with every address ever configured.
+
+Two details keep a request on an old snapshot from undoing the removal. A
+connection put back to a closed pool is closed instead of parked. A
+passive ejection reported for a removed address used to call
+`reg.Pool(addr).Flush()`, which would have created the pool again; it now
+uses `Registry.Lookup`, which never creates one.
+
+### Startup-only settings: warn and keep
+
+Some settings size things made once: the admin listener (`[admin]`), the
+log buffer (`[log]`), the probers (`[health]`), the upstream pools
+(`max_idle_per_backend`, `idle_timeout_ms`) and the bucket table
+(`max_entries`, `sweep_ms`). Changing them on reload would mean rebuilding
+those objects and losing what they hold. `Config.KeepStartup` copies the
+running values into the new config before its snapshot is built and
+returns the keys that differed. The reload goes ahead and logs one
+warning naming them. The snapshot then holds the values actually in force,
+so `/status` never shows a setting that is not applied. Rejecting the
+whole reload was the alternative; it would block an unrelated certificate
+renewal because someone also edited `[health]`.
+
+`max_conns`, `max_conns_per_ip` and `trusted_proxies` did not need to be
+on that list. The tracker's limits are now an atomic pointer that a
+reload replaces, read once per accept. A lowered cap closes nothing;
+connections over it end on their own.
+
+### Listeners: matched by configured address
+
+A listener's identity is its address as written in the file, plus its
+position among listeners with the same address (only port 0 may repeat).
+A reload keeps the socket of every listener whose identity is still
+present. If only the mode or redirect port changed, it swaps the handler
+through an atomic pointer that each new connection reads once at accept,
+so a mode change never closes the socket and never refuses a connection.
+Added listeners are opened before the swap, so a busy port fails the
+reload with the old config intact. Removed ones are closed after it by
+`Server.CloseListener`, whose accept loop then returns
+`ErrServerClosed`; connections it already accepted carry on.
+
+The cost of matching by string: `localhost:8443` to `127.0.0.1:8443` is a
+remove plus an add, and the add fails because the old socket still holds
+the port. Opening new sockets first is what makes a failed reload
+harmless, so closing first is not an option. `SO_REUSEPORT` would allow
+both at once but changes how the kernel spreads connections, which is not
+worth it for a rename.
+
+### Shutdown: close, wake, drain, cut
+
+`conn.Server.Shutdown(ctx)`:
+
+1. Close every listener and wait for the accept loops, so new connections
+   are refused and nothing more is added to the tracker.
+2. `Tracker.Drain`: set the draining flag, then set the read deadline of
+   every idle keep-alive connection to now. A goroutine blocked in `Read`
+   wakes with a timeout, sees the connection is done, and the server
+   closes it. This is how to wake a goroutine blocked in `Read` without
+   closing the socket under it.
+3. Every response written while draining gets `Connection: close`, and
+   the request loop stops after it.
+4. Wait for the tracker's WaitGroup until `ctx` ends, then fall back to
+   `Close`: close every client connection and every request's upstream
+   connection.
+
+The race in step 2 is a connection going idle as the drain starts. The
+connection sets its state to idle, then its idle deadline, then checks
+the flag. `Drain` sets the flag, then scans the states. Either the
+connection sees the flag and returns, or `Drain` sees it idle and its
+deadline of now is set after the connection's own, so it wins.
+`TestShutdownIdleRace` runs the race fifty times.
+
+A connection that has not sent its first request yet is left alone: the
+client may already have sent it, and a request on a fresh connection that
+gets reset cannot be safely retried. It is served with `Connection:
+close`, bounded by the handshake and header timeouts and by
+`shutdown_ms`. Idle keep-alive connections do have the race where the
+client sends just as the proxy closes, as with any idle timeout, and HTTP
+clients retry idempotent requests on a reused connection for that reason.
+
+`shutdown_ms` (`[timeouts]`, default 8 s, 0 for no drain) is read from the
+current snapshot when the signal arrives, so it reloads. 8 s leaves the
+drain and the teardown inside `docker stop`'s 10 s grace period. Past it
+the process still exits 0: it did what it was configured to do.
+
+After the drain, the admin server stops (Prometheus can scrape during the
+drain), the root context is cancelled, and each background goroutine's
+`Close` waits for it.
+
+### The hard close also cuts off the backend
+
+Until now `Server.Close` closed only the client sockets. A request waiting
+on a slow backend reads from the upstream connection, not the client, so
+it kept running until `upstream_response_ms`. The drain deadline exposed
+this: a 300 ms deadline took 5 s. Each `TrackedConn` now records the
+upstream connection its request is using (an atomic pointer, set after
+`Get` and cleared before the connection is parked or discarded), and
+`CloseAll` closes it too. If `CloseAll` closes a connection as it is being
+parked, the pool's liveness check discards it on the next `Get`. Nothing
+on the request path allocates for it.
+
+### One root context
+
+`NewRegistryContext`, `NewCheckerContext` and `ratelimit.NewContext` take
+a parent context. `App` derives all three from one root, so cancelling it
+stops the reaper, every prober and the sweeper, and each `Close` then
+waits for its goroutines. The old constructors remain, with
+`context.Background()`. The root is cancelled only after the drain, so
+health checks keep running while requests finish.
+
+| Goroutine | Owner | Stopped by |
+| --- | --- | --- |
+| signal loop | `main` | `Shutdown` returning |
+| accept loop per listener | `App` | `CloseListener` on reload, or `Shutdown` |
+| one per client connection | `conn.Server` | its handler returning, the drain, or `Close` at the deadline |
+| request-body writer | the connection | its request ending |
+| prober per backend address | `health.Checker` | `Sync` removing it, or the root context |
+| upstream reaper, rate-limit sweeper | `upstream.Registry`, `ratelimit.Table` | the root context |
+| admin `Serve` | `App` | `admin.Server.Shutdown` after the drain |
+| log flusher | `main` | its close function before exit |
+
+### nginx does it with processes
+
+On `SIGHUP`, nginx's master process starts new worker processes with the
+new config and tells the old ones to stop accepting and exit once their
+connections finish. Old and new configs run side by side in different
+processes, and per-worker state (upstream keep-alive pools, health of
+passive checks, `limit_req` zones outside shared memory) does not carry
+over. Here old and new configs run side by side in one process, and the
+state above does carry over, because it lives outside the snapshot and is
+keyed by name. The cost is that a bug in a reload is a bug in the one
+process serving traffic: a reload that panicked would take the proxy
+down, where nginx would lose only the new workers. Phase 8's per-
+connection `recover` does not cover the reload goroutine; a reload runs on
+the main goroutine and only calls code that also runs at startup.
+
+### Tests
+
+- `internal/conn`: draining an in-flight request (completes with
+  `Connection: close`, new dials refused), idle connections closed at
+  once, the idle race fifty times, the deadline cutting a request waiting
+  on a backend, a fresh connection's first request served while draining,
+  `CloseListener`, and reloaded tracker limits and exemptions.
+- `internal/app`: a reload swapping the pool on a kept-alive connection;
+  state carried by identity; a request in flight across a reload; five
+  broken configs (TOML syntax, validation, missing certificate, busy
+  port, missing file) each leaving the old config serving, logged,
+  counted, with no prober or pool left for the backends they named;
+  listeners added, removed and switched to redirect; startup-only
+  warnings; shutdown draining and timing out; a reloaded `shutdown_ms`.
+- `cmd/proxy/signal_test.go`: the real binary and real signals. `SIGTERM`
+  during a 5 s response (200 with `Connection: close`, dial refused at
+  once, exit 0 within 500 ms of the response); `shutdown_ms = 1000`
+  against the same response (exit 0 between 1.0 and 1.5 s); `SIGHUP` with
+  a broken then a good file, read back from `/metrics`. A `-race` binary
+  sleeps a second at exit by default, so the subprocess runs with
+  `GORACE=atexit_sleep_ms=0`, or every exit would look a second late.
+- `test/integration/phase7_test.go`: 60 reloads every 50 ms alternating
+  pool membership under eight keep-alive clients over HTTPS with active
+  checks every 50 ms, no failed request; certificate rotation (a new
+  handshake gets the new serial, an open connection keeps working); 1,100
+  reloads with heap and goroutines compared after the first 100;
+  `goleak.VerifyNone` after shutdown with idle connections, a request in
+  flight, probers, reloads and the admin listener behind it.
+- `bench/phase7/reload-wrk.sh`: the 60 s wrk run with a `SIGHUP` a second.
+  `RELOADS=off` is the same run without signals, as a control.
+- `lab/stop-check.sh`: `docker compose stop proxy` with an idle and a
+  busy connection, in CI after the lab check.
+
+The first heap measurement over 1,000 reloads grew by 0.9 MB. A heap
+profile put it all in the in-process test backends' request log, filled
+by health probes, not in the proxy, so the test turns that log off
+(`BackendOptions.NoRecord`). The remaining difference, 3 to 170 KB
+between runs, is probes and client connections in flight when the heap is
+read.
+
+### Results
+
+On the development machine (WSL2, Core Ultra 7 155H):
+
+- `reload-wrk.sh`, `-race` build, 60 s, 32 connections: 59 reloads
+  applied, 0 failed, reload time 0.7 / 1.6 / 27 ms (min / median / max).
+  0 non-2xx responses; 613,796 access-log lines, every one a 200; all
+  three backends served. wrk counted 64 "timeouts" and no other socket
+  error: the wall clock stepped twice (−5.0 s), one in-flight request per
+  connection per step. The control run without reloads counted the same
+  64 for two steps, and 32 in a run with one step. The script counts
+  steps once a second and allows one timeout per connection per step, as
+  `race-profile.sh` does in Phase 6.
+- 1,000 reloads: heap +3 KB to +170 KB across runs, goroutines 10 before
+  and 10 after.
+- `docker stop` in the lab, with a 3 s request 1 s in: 2.35 s, exit code
+  0, the request answered 200 with `Connection: close`, the drain
+  2.0 s.

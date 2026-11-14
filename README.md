@@ -8,24 +8,26 @@ it uses only the parsers and serialisers (`ReadRequest`, `ReadResponse`,
 `Request.Write`, `Response.Write`, `Header`). `http.Server`, `http.Transport`,
 `http.Client` and `httputil.ReverseProxy` are not used on the request path.
 
-**Status:** Phase 6 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
+**Status:** Phase 7 (HTTPS termination with TLS 1.2 and 1.3; SNI picks the
 certificate and the pool on one port; round-robin, least-connections or
 consistent hashing across each pool, from a TOML config file; upstream
 connections kept alive and reused through the proxy's own pool; active and
 passive health checks that eject failing backends and re-admit them;
 retries on another backend; per-client token-bucket rate limits per route
 with 429 and `Retry-After`, and a per-IP connection cap; Prometheus
-`/metrics`, a JSON `/status` and pprof on a loopback admin listener). Hot
-reload and graceful shutdown arrive in Phase 7.
+`/metrics`, a JSON `/status` and pprof on a loopback admin listener;
+`SIGHUP` reloads the config, certificates included, without failing a
+request, and `SIGTERM` drains open requests before exiting). Hardening
+and fuzzing arrive in Phase 8.
 
 ## Layout
 
 ```text
 cmd/proxy/         the proxy
 cmd/testbackend/   test backend for tests and the lab
-internal/          proxy packages (conn, httpx, tlsx, lb, upstream, health,
-                   metrics, ratelimit, config, admin, logbuf) and the test
-                   backend library
+internal/          proxy packages (app, conn, httpx, tlsx, lb, upstream,
+                   health, metrics, ratelimit, config, admin, logbuf) and
+                   the test backend library
 test/integration/  end-to-end tests and their helpers
 bench/             benchmark and demo scripts, raw results
 lab/               Docker Compose lab, certificate script
@@ -61,6 +63,9 @@ make bench-kill         # kill -9 one of three backends under wrk (-race build),
 make bench-stop         # SIGSTOP one of three backends under wrk (-race build), then SIGCONT
 make bench-ratelimit-k6   # k6 at twice the rate limit plus a second client, in the lab (lab must be up)
 make bench-ratelimit-race # -race run and mutex profile with the rate-limit table under load
+make bench-reload       # SIGHUP every second, alternating pool membership, during 60 s of wrk (-race build)
+make bench-reload-control # the same wrk run without SIGHUP
+make stop-check         # docker stop drains and exits 0 inside the grace period (lab must be up)
 ```
 
 ## Running the proxy
@@ -104,6 +109,33 @@ missing port in address`, `route[0].cert: certificate is not valid for
 reported as warnings. One JSON access-log line per request goes to
 stdout, through a buffer flushed every second and on exit, with the host, pool, backend and, for HTTPS, the SNI, TLS version
 and whether the session was resumed.
+
+### Reload and shutdown
+
+`SIGHUP` rereads the config file. A file that fails to parse, validate,
+load its certificates or open an added listener is logged, counted in
+`proxy_config_reloads_total{result="failure"}`, and the running config
+keeps serving. A valid one applies to every request that starts after
+it; requests in flight finish on the old one. Backends in both configs
+keep their health, idle connections and in-flight counts; removed ones
+have their prober stopped, idle connections closed and series dropped
+from `/metrics`. New TLS handshakes get the reloaded certificates,
+and session tickets stay valid. Added listeners open, removed ones close
+(their open connections carry on), and a listener whose mode changed
+keeps its socket. Write the new file elsewhere and rename it into place,
+so a reload never reads half a file.
+
+`[admin]`, `[log]`, `[health]`, `upstream.max_idle_per_backend` and
+`idle_timeout_ms`, and `rate_limit.max_entries` and `sweep_ms` apply
+only at startup: a reload that changes them logs a warning naming them
+and keeps the running values. Everything else reloads, `[limits]` and
+`trusted_proxies` included.
+
+`SIGTERM` or `SIGINT` closes the listeners, so new connections are
+refused, closes idle keep-alive connections at once, and lets requests in
+flight finish with `Connection: close`, for up to `shutdown_ms` (8 s by
+default, inside `docker stop`'s 10 s). Whatever is still open then is
+closed. The exit code is 0 either way.
 
 ### Config file
 
@@ -234,7 +266,8 @@ Admin listener: `/metrics` (Prometheus: requests by pool, backend and
 status, latency histogram by pool, in-flight requests, upstream dials and
 reuses, backend health and transitions, retries by reason, client
 connections and connections refused at accept by reason, rate-limited
-requests by route, rate-limit table size and evictions, Go runtime), `/status` (JSON: pools and backends with their
+requests by route, rate-limit table size and evictions, config reloads
+by result, Go runtime), `/status` (JSON: pools and backends with their
 health, last check and connection counts) and `/debug/pprof/`.
 
 ## Test backend

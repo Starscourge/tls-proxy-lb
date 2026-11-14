@@ -116,15 +116,19 @@ for mode in headers body read; do
   attackers=()
   for i in 1 2 3; do
     name="slowhttptest-$mode-$i"
-    docker run -d --rm --name "$name" --network "$network" --ip "10.0.0.3$i" \
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker run -d --name "$name" --network "$network" --ip "10.0.0.3$i" \
       --ulimit nofile=65536:65536 "$image" ${args[$mode]} -p 3 >/dev/null
     attackers+=("$name")
   done
   sleep 8 # connections ramp up
   normal "$((attack_s - 15))s" "$mode"
+  # Kept until they exit, so their final report can be read: an attack
+  # the proxy fends off early ends before its 60 s.
   for c in "${attackers[@]}"; do
-    docker logs "$c" >"$tmp/$c.log" 2>&1 || true
     docker wait "$c" >/dev/null 2>&1 || true
+    docker logs "$c" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' >"$tmp/$c.log" || true
+    docker rm -f "$c" >/dev/null 2>&1 || true
   done
   sleep 20 # connections the attack left behind time out
   kill "$sampler" 2>/dev/null || true
@@ -169,7 +173,8 @@ done
   for mode in headers body read; do
     echo
     echo "## $mode: slowhttptest's last report, attacker 1"
-    grep -E 'connections|closed|pending|connected|error|service available' "$tmp/slowhttptest-$mode-1.log" | tail -8 || true
+    grep -E 'test duration|number of connections|closed|pending|connected|error|service available' "$tmp/slowhttptest-$mode-1.log" |
+      tail -7 | sed 's/^[[:space:]]*/          /' || true
   done
   echo
   if [[ ${#fail[@]} -eq 0 ]]; then echo "RESULT: PASS"; else printf 'RESULT: FAIL: %s\n' "${fail[*]}"; fi

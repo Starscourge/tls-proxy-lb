@@ -2162,7 +2162,7 @@ thing the proxy does:
 
 | | tls-proxy-lb (`proxy.toml`) | nginx (`nginx-proxy.conf`) |
 | --- | --- | --- |
-| workers | `GOMAXPROCS` 4 | `worker_processes 4` |
+| workers | `GOMAXPROCS` 4 | `worker_processes 4`, `listen ... reuseport` |
 | TLS | 1.2 and 1.3; Go picks `TLS_AES_128_GCM_SHA256` and X25519MLKEM768 | the same suites in the same preference, `ssl_prefer_server_ciphers on`, `ssl_ecdh_curve X25519MLKEM768:...` |
 | certificate | ECDSA P-256, `default.test` | the same files |
 | upstream idle connections | 128 per backend, 256 in all | `keepalive 64` per worker, 256 in all |
@@ -2174,11 +2174,106 @@ thing the proxy does:
 `bench.sh` checks before anything is measured that both negotiate the
 same protocol, suite and group (`openssl s_client` from the load
 generator, which links the same OpenSSL as wrk) and that the proxy's
-`GOMAXPROCS` equals nginx's worker count. nginx 1.30.6 is the Alpine image
-with OpenSSL 3.5, the first with ML-KEM; with 1.28's OpenSSL 3.3 it would
-have negotiated plain X25519 and done less work per handshake than Go.
+`GOMAXPROCS` equals nginx's worker count. nginx 1.30.6 is the official
+Debian (trixie) image, linked against OpenSSL 3.5, the first with ML-KEM;
+with OpenSSL 3.3 it would have negotiated plain X25519 and done less work
+per handshake than Go.
 nginx's response buffering stays on, as it ships, but with buffers big
 enough for 100 KB: past them it spills to a temporary file. Access logs go
 to `/dev/null` on both sides so each line is formatted, buffered and
 written without a disk; a log on tmpfs would have grown by gigabytes and
 counted against the container's memory.
+
+### nginx on glibc, not musl
+
+The benchmark first ran nginx from the Alpine image, which is small and
+was the first to carry OpenSSL 3.5. The same nginx 1.30.6 from the Debian
+image, with OpenSSL 3.5.7 and the same configuration, negotiating the same
+suite and group, was much faster at 200 connections (two runs each, the
+lower median):
+
+| scenario | Alpine (musl) | Debian (glibc) | |
+| --- | ---: | ---: | ---: |
+| ka-1k | 44,682 req/s | 72,000 req/s | +61% |
+| new-1k | 3,929 req/s | 5,209 req/s | +33% |
+| ka-100k | 12,400 req/s | 17,411 req/s | +40% |
+
+Both used all four cores, so musl's allocator and string functions cost
+nginx and OpenSSL a third or more of their speed. Against the Alpine
+nginx, the proxy looked 15 to 50% faster than nginx; that was a
+measurement of musl. nginx and its origins now run from the Debian image.
+The proxy is a static Go binary and uses neither libc. The load
+generator stays on Alpine: it is the same client for both devices, and
+the process fan-out gives it enough CPU (below). Rejected: keeping
+Alpine for a smaller image, which would have compared the proxy with an
+nginx few would deploy for speed.
+
+### `Connection: close` needs its space
+
+The first full benchmark showed `new-1k` within a few percent of `ka-1k`
+for both devices, at the same CPU per request. wrk adds a `-H` header
+only when a space follows the colon, and drops `Connection:close` without
+a word, so the "new connection per request" scenario had run on
+keep-alive connections. Corrected, the proxy's rate fell from 54,000 to
+about 5,000 a second. Each run now records the TCP connections the host
+accepted during it (`PassiveOpens` in `/proc/net/snmp`; every container
+shares the host's network namespace), and `bench.sh` fails a
+new-connection run that opened fewer than 0.9 per request. Rejected:
+counting on the proxy's own connection metric, which nginx has no
+counterpart for.
+
+### The load generator is eight processes, not eight threads
+
+With handshakes really happening, neither device got past 1.5 of its four
+cores. The load generator was the limit: one wrk with eight threads spent
+3.9 ms of CPU per full handshake, against 0.66 ms for a wrk with one
+thread, and eight threads finished fewer handshakes a second than two.
+Every thread shares one OpenSSL, and its locks are contended per
+handshake. Eight single-thread processes side by side don't share it:
+5,700 handshakes a second, with the proxy at 3.5 cores.
+
+`benchlib.sh` now runs `LOADGEN_PROCS` (8) single-thread wrk or wrk2
+processes, one per load-generator vCPU, with the connections and the
+rate split evenly between them, for every scenario and not only
+`new-1k`, so every scenario is driven the same way. A run's requests per
+second and errors are the sums over the processes. Its percentiles come
+from the processes' wrk2 spectra (`Detailed Percentile spectrum`) merged
+into one distribution: the summed request count at each latency,
+interpolated between the lines wrk2 prints, read off at 50, 90, 99 and
+99.9%. A test checks that merging one spectrum gives back wrk2's own
+percentiles within 2%, and that merging two copies changes nothing.
+Rejected: averaging the processes' p99s, which is not a percentile of
+anything; k6, which would drive `new-1k` with a different client from
+the other scenarios; and an older OpenSSL in the load generator, which
+offers no ML-KEM and would have both devices do a different key exchange
+from what a current client asks for.
+
+### nginx listens with `reuseport`
+
+nginx's p99 in the first full run reached seconds where the proxy's stayed
+at milliseconds, while nginx used only 2.2 of its four cores. Per-worker
+CPU showed one worker at 100% and the other three at 40 to 70%. wrk2
+opens all its connections in one burst at the start, and with one shared
+listening socket the kernel hands the burst out unevenly. Each worker
+then serves its connections for the whole run, so the overloaded worker
+queues requests while the others idle, and wrk2 charges the queueing to
+every request behind it. With `listen ... reuseport` each worker has its
+own socket, the kernel hashes connections across them, the workers' CPU
+times came out within 6% of each other, and p99 at the same rate fell
+from 414 ms to 20 ms. Real clients arrive spread out, not in one burst,
+and `reuseport` is the usual production setting, so this is nginx at its
+best, as the rest of its configuration is. The proxy needs nothing
+similar: one accept loop feeds goroutines that the Go scheduler spreads
+over all four threads.
+
+### A backend can come back with the fault still on
+
+Under 5% loss with passive ejection, backend2 was ejected 6.4 s into the
+fault. Its `eject_ms` (5 s) ran out, and the active checks, which a 5%
+loss rarely fails twice in a row, re-admitted it while the loss was still
+on. The analysis had looked for re-admission only after the fault
+cleared, so it reported "not back by the end", and its out-of-rotation
+window ran on past the re-admission. `plot slow` now takes re-admission
+as the first `backend healthy` after the ejection, ends the
+out-of-rotation window there, and counts repeat ejections during the
+fault.

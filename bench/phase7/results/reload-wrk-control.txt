@@ -1,0 +1,50 @@
+# Phase 7 control: the same wrk run with no SIGHUP (b1+b2 throughout)
+date:     2026-11-14T07:23:03Z
+commit:   c5638dc
+go:       go1.27.4 linux/amd64
+kernel:   Linux 6.6.87.2-microsoft-standard-WSL2
+cpu:      Intel(R) Core(TM) Ultra 7 155H, 22 logical CPUs
+pinning:  proxy 0,2,4,6 (first GOMAXPROCS of them), backends 8-15, wrk 16-21
+proxy:    -race build, GOMAXPROCS 4, round-robin over 2 of 3 test backends,
+          max_idle_per_backend 128; health: interval 500 ms, timeout 250 ms
+command:  wrk -t2 -c32 -d60s --timeout 5s --latency http://127.0.0.1:18080/
+reloads:  config renamed into place, then SIGHUP, every second: b1+b2, b2+b3, ...
+
+Running 1m test @ http://127.0.0.1:18080/
+  2 threads and 32 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    12.60ms   80.02ms   1.14s    98.60%
+    Req/Sec     5.06k   574.52     6.89k    84.83%
+  Latency Distribution
+     50%    2.89ms
+     75%    5.79ms
+     90%    9.87ms
+     99%  389.89ms
+  607818 requests in 0.94m, 84.63MB read
+  Socket errors: connect 0, read 0, write 0, timeout 64
+Requests/sec:  10781.19
+Transfer/sec:      1.50MB
+
+## Reloads
+SIGHUPs sent:                  0
+applied (metrics):             0
+failed (metrics):              0
+reload time ms (min/median/max):  /  / 
+
+## Requests
+non-2xx responses (wrk):       0
+socket errors (wrk):           connect 0, read 0, write 0, timeout 64
+wall clock against monotonic:  -3.722 s over the run, in 2 steps
+                               wrk timeouts are clock-step artefacts: at most one per connection
+                               per step (64 allowed), and the access log, timed
+                               monotonically, has no failure
+access log lines:              607847
+failed in the access log:      0
+by backend:
+ 303924 127.0.0.1:18001
+ 303923 127.0.0.1:18002
+
+data race reports:             0
+proxy exit code:               0 (after SIGTERM)
+
+RESULT: PASS

@@ -1,18 +1,19 @@
-# bench/phase9/demo-slow.sh 500 60 at 37834ca-dirty, 2026-11-14T12:10:05Z
+# bench/phase9/demo-slow.sh 500 60 at 6c7d2ba, 2026-11-14T15:39:58Z
 # netem loss 5% on backend2; configs in bench/phase9/configs/; k6 k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
 config     window                  requests  failed backend2%    p50 ms    p99 ms     max ms   >100ms
-rr         before the fault            9069       0     33.3      0.44      0.81        3.5        0
-rr         fault on                   10013       0     33.3      0.43    210.91      842.4      173
-rr         after the fault             9919       0     33.3      0.46      1.02        4.1        0
-lc         before the fault            9082       0     33.4      0.50      1.09        3.9        0
-lc         fault on                    9987       0     11.1      0.47      1.18      425.4       63
-lc         after the fault             9931       0     33.2      0.44      0.95        3.2        0
-lc-eject   before the fault            9072       0     33.3      0.46      0.84        3.3        0
-lc-eject   fault on                    9999       0     14.7      0.47      1.12     1001.5       64
-lc-eject   after the fault             9930       0     33.3      0.48      0.89        3.5        0
+rr         before the fault            9070       0     33.3      0.46      0.80      208.8        1
+rr         fault on                   10007       0     33.3      0.45    211.01     1001.1      164
+rr         after the fault             9923       0     33.3      0.45      0.77        3.1        0
+lc         before the fault            9074       0     33.3      0.46      0.84        3.4        0
+lc         fault on                   10000       0      9.6      0.45      1.01      424.4       62
+lc         after the fault             9926       0     33.3      0.46      0.77        5.2        0
+lc-eject   before the fault            9076       0     33.3      0.46      0.83        3.7        0
+lc-eject   fault on                    9994       0      9.3      0.45      1.01     1001.5       63
+lc-eject   fault on, out               3031       0      0.0      0.44      0.78        2.8        0
+lc-eject   after the fault             9931       0     33.3      0.46      0.79        3.4        0
 
 rr         backend2 stayed in rotation
 lc         backend2 stayed in rotation
-lc-eject   backend2 stayed in rotation
+lc-eject   backend2 out 6407 ms after the fault (backend ejected), back 6062 ms later with the fault still on
 
 (the first 2 s of each run, k6 starting up, are left out of "before the fault")

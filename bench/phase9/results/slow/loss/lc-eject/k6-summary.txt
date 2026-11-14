@@ -3,15 +3,15 @@
   █ TOTAL RESULTS 
 
     HTTP
-    http_req_duration..............: min=308.3µs med=466.2µs  p(99)=919.1µs max=1s
-      { expected_response:true }...: min=308.3µs med=466.2µs  p(99)=919.1µs max=1s
+    http_req_duration..............: min=336µs   med=448.29µs p(99)=865.2µs max=1s
+      { expected_response:true }...: min=336µs   med=448.29µs p(99)=865.2µs max=1s
     http_req_failed................: 0.00%  0 out of 30001
-    http_reqs......................: 30001  500.008352/s
+    http_reqs......................: 30001  500.008944/s
 
     EXECUTION
-    iteration_duration.............: min=415µs   med=568.99µs p(99)=1.19ms  max=1s
-    iterations.....................: 30001  500.008352/s
-    vus............................: 0      min=0          max=2  
+    iteration_duration.............: min=410.6µs med=543.69µs p(99)=1.17ms  max=1s
+    iterations.....................: 30001  500.008944/s
+    vus............................: 1      min=0          max=2  
     vus_max........................: 100    min=100        max=100
 
     NETWORK

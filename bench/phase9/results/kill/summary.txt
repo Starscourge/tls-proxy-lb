@@ -1,17 +1,19 @@
-# bench/phase9/demo-kill.sh 1000 60 at aac6ef9-dirty, 2026-11-14T11:55:47Z
+# bench/phase9/demo-kill.sh 1000 60 at 6c7d2ba, 2026-11-14T15:32:17Z
 # lab/proxy.toml; k6 k6 v1.3.0+dirty (commit/5870e99ae8-dirty, go1.25.1, linux/amd64)
 requests             60001, failed 0
 backend2 killed           at 20.003 s
-out of rotation      at 20.105 s (backend ejected): time to eject 102 ms
+out of rotation      at 20.104 s (backend ejected): time to eject 101 ms
 backend2 started          at 40.003 s
-back in rotation     at 42.734 s: time to re-admit 2731 ms
+back in rotation     at 42.510 s: time to re-admit 2507 ms
 
 window                  requests  failed    p50 ms    p99 ms     max ms    >100ms       >1s
-before the kill            20008       0      0.40      1.79      178.1        16         0
-detection                    101       0      0.46      0.81        1.1         0         0
-out of rotation            22630       0      0.39      0.70        4.6         0         0
-after re-admission         17262       0      0.40      0.73        4.7         0         0
+before the kill            18002       0      0.41      0.71        4.6         0         0
+detection                    102       0      0.50      0.73        2.5         0         0
+out of rotation            22406       0      0.41      0.72        4.8         0         0
+after re-admission         17487       0      0.41      0.74        5.1         0         0
 
 failed during detection           0
 failed after ejection             0
 served by backend2 while out of rotation 0
+
+(the first 2 s, k6 starting up, are left out of "before the kill")

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -119,7 +121,21 @@ func TestCollect(t *testing.T) {
 	chk.Target("10.0.0.99:80")
 	tg.ReportFailure() // ejected
 
-	m := New(Sources{Upstream: reg, Health: chk, ClientConns: func() int { return 7 }})
+	tab := ratelimit.New(ratelimit.Options{MaxEntries: 512})
+	defer tab.Close()
+	lim := tab.Limiter("a.test", ratelimit.Limit{Rate: 1, Burst: 1})
+	for i := range 3 {
+		lim.Allow(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}))
+	}
+	rejected := map[string]uint64{"max_conns": 4, "per_ip": 9}
+	m := New(Sources{Upstream: reg, Health: chk, ClientConns: func() int { return 7 },
+		ClientConnsRejected: func(r string) uint64 { return rejected[r] }, RateLimit: tab})
+	rl := m.RateLimited("a.test")
+	if rl != m.RateLimited("a.test") || rl == m.RateLimited("") {
+		t.Fatal("RateLimited not keyed by route")
+	}
+	rl.Add(5)
+	m.RateLimited("").Add(2)
 	ps := m.Pool("web")
 	if ps != m.Pool("web") {
 		t.Fatal("Pool made new stats for the same name")
@@ -160,6 +176,13 @@ func TestCollect(t *testing.T) {
 	want(t, m, "proxy_backend_state", map[string]string{"backend": addr, "state": "healthy"}, 0)
 	want(t, m, "proxy_backend_transitions_total", map[string]string{"backend": addr, "to": "ejected"}, 1)
 	want(t, m, "proxy_client_connections", nil, 7)
+	want(t, m, "proxy_client_connections_rejected_total", map[string]string{"reason": "max_conns"}, 4)
+	want(t, m, "proxy_client_connections_rejected_total", map[string]string{"reason": "per_ip"}, 9)
+	want(t, m, "proxy_rate_limited_requests_total", map[string]string{"route": "a.test"}, 5)
+	want(t, m, "proxy_rate_limited_requests_total", map[string]string{"route": ""}, 2)
+	want(t, m, "proxy_rate_limit_buckets", nil, 3)
+	want(t, m, "proxy_rate_limit_buckets_max", nil, 512)
+	want(t, m, "proxy_rate_limit_evictions_total", nil, 0)
 	if _, ok := value(t, m, "go_goroutines", nil); !ok {
 		t.Fatal("go_goroutines missing")
 	}

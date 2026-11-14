@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
 
@@ -128,7 +129,15 @@ type Sources struct {
 	Health   *health.Checker
 	// ClientConns returns the number of open client connections.
 	ClientConns func() int
+	// ClientConnsRejected returns how many client connections were
+	// refused at accept for the reason named ("max_conns", "per_ip").
+	ClientConnsRejected func(reason string) uint64
+	// RateLimit is the table of client token buckets.
+	RateLimit *ratelimit.Table
 }
+
+// RejectReasons are the reasons ClientConnsRejected is asked about.
+var RejectReasons = []string{"max_conns", "per_ip"}
 
 // LatencyBuckets are the request latency histogram's bucket bounds in
 // seconds: from half a millisecond, for a backend on the same host, to
@@ -143,8 +152,9 @@ type Metrics struct {
 
 	unrouted Codes
 
-	mu    sync.Mutex
-	pools map[string]*poolEntry
+	mu          sync.Mutex
+	pools       map[string]*poolEntry
+	rateLimited map[string]*atomic.Uint64
 }
 
 type poolEntry struct {
@@ -162,8 +172,9 @@ func New(src Sources) *Metrics {
 			Help:    "Time from a request's first byte to the end of its response, by pool.",
 			Buckets: LatencyBuckets,
 		}, []string{"pool"}),
-		src:   src,
-		pools: make(map[string]*poolEntry),
+		src:         src,
+		pools:       make(map[string]*poolEntry),
+		rateLimited: make(map[string]*atomic.Uint64),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
@@ -202,6 +213,20 @@ func (m *Metrics) Backend(pool, addr string) *BackendStats {
 		e.backends[addr] = b
 	}
 	return b
+}
+
+// RateLimited returns the counter of requests to route refused with 429,
+// creating it on first use. route is the route's host, "" for the default
+// pool. It is called while building a snapshot, not per request.
+func (m *Metrics) RateLimited(route string) *atomic.Uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.rateLimited[route]
+	if !ok {
+		c = new(atomic.Uint64)
+		m.rateLimited[route] = c
+	}
+	return c
 }
 
 // Unrouted counts responses to requests that reached no pool: 400, 404,
@@ -254,6 +279,18 @@ var (
 		[]string{"backend", "to"}, nil)
 	descClientConns = prometheus.NewDesc("proxy_client_connections",
 		"Open client connections.", nil, nil)
+	descClientConnsRejected = prometheus.NewDesc("proxy_client_connections_rejected_total",
+		"Client connections closed at accept: at the total cap (max_conns) or at the client address's cap (per_ip).",
+		[]string{"reason"}, nil)
+	descRateLimited = prometheus.NewDesc("proxy_rate_limited_requests_total",
+		"Requests refused with 429 by the per-client rate limit, by route host; empty for the default pool.",
+		[]string{"route"}, nil)
+	descRateLimitEntries = prometheus.NewDesc("proxy_rate_limit_buckets",
+		"Client token buckets held in the rate-limit table.", nil, nil)
+	descRateLimitCap = prometheus.NewDesc("proxy_rate_limit_buckets_max",
+		"The most client token buckets the rate-limit table holds.", nil, nil)
+	descRateLimitEvictions = prometheus.NewDesc("proxy_rate_limit_evictions_total",
+		"Buckets dropped before they had refilled, to keep the table under its cap.", nil, nil)
 )
 
 // collector reads Metrics' stats and its Sources at scrape time. It is
@@ -297,7 +334,18 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 		}
 		pools = append(pools, ps)
 	}
+	type routeStat struct {
+		route string
+		n     *atomic.Uint64
+	}
+	limited := make([]routeStat, 0, len(m.rateLimited))
+	for route, n := range m.rateLimited {
+		limited = append(limited, routeStat{route, n})
+	}
 	m.mu.Unlock()
+	for _, r := range limited {
+		counter(descRateLimited, r.n.Load(), r.route)
+	}
 
 	for _, p := range pools {
 		p.s.NoBackend.each(func(code string, n uint64) { counter(descRequests, n, p.name, "", code) })
@@ -336,5 +384,15 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	if f := m.src.ClientConns; f != nil {
 		gauge(descClientConns, float64(f()))
+	}
+	if f := m.src.ClientConnsRejected; f != nil {
+		for _, r := range RejectReasons {
+			counter(descClientConnsRejected, f(r), r)
+		}
+	}
+	if t := m.src.RateLimit; t != nil {
+		gauge(descRateLimitEntries, float64(t.Len()))
+		gauge(descRateLimitCap, float64(t.MaxEntries()))
+		counter(descRateLimitEvictions, t.Evictions())
 	}
 }

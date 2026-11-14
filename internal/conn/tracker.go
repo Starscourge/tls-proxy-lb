@@ -213,6 +213,17 @@ func (t *Tracker) Rejected() uint64 {
 	return t.rejected[RejectMaxConns].Load() + t.rejected[RejectPerIP].Load()
 }
 
+// RejectedByName returns how many connections Add turned away for the
+// reason whose String is name, or 0 for an unknown name.
+func (t *Tracker) RejectedByName(name string) uint64 {
+	for r := RejectNone + 1; r < numRejectReasons; r++ {
+		if r.String() == name {
+			return t.rejected[r].Load()
+		}
+	}
+	return 0
+}
+
 // RejectedFor returns how many connections Add turned away for reason.
 func (t *Tracker) RejectedFor(reason RejectReason) uint64 {
 	if reason <= RejectNone || reason >= numRejectReasons {

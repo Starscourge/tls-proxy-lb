@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx/tlstest"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -174,6 +176,99 @@ func TestRouteZeroAllocs(t *testing.T) {
 	s := mustSnapshot(t, fullConfig)
 	if n := testing.AllocsPerRun(1000, func() { s.Route("a.test:8080") }); n != 0 {
 		t.Fatalf("Route allocates %v times per call", n)
+	}
+	if n := testing.AllocsPerRun(1000, func() { s.Lookup("a.test:8080") }); n != 0 {
+		t.Fatalf("Lookup allocates %v times per call", n)
+	}
+}
+
+const limitedConfig = `
+default_pool = "p"
+trusted_proxies = ["10.0.0.0/8"]
+
+[[listener]]
+address = ":8080"
+mode = "http"
+
+[[route]]
+host = "a.test"
+pool = "p"
+
+[[route]]
+host = "b.test"
+pool = "p"
+rate_limit = { rate = 50, burst = 5 }
+
+[[route]]
+host = "c.test"
+pool = "p"
+rate_limit = { rate = 0 }
+
+[pool.p]
+backends = [{ address = "127.0.0.1:8000" }]
+
+[rate_limit]
+rate  = 10
+burst = 20
+`
+
+// TestSnapshotRateLimits: each route gets [rate_limit]'s default unless it
+// sets its own, the default pool gets the default, and rate = 0 is off.
+func TestSnapshotRateLimits(t *testing.T) {
+	c, err := Parse("rl.toml", []byte(limitedConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab := ratelimit.New(ratelimit.Options{})
+	defer tab.Close()
+	m := metrics.New(metrics.Sources{})
+	s, err := NewSnapshot(c, Runtime{RateLimit: tab, Metrics: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]ratelimit.Limit{
+		"a.test":     {Rate: 10, Burst: 20},
+		"b.test":     {Rate: 50, Burst: 5},
+		"other.test": {Rate: 10, Burst: 20},
+	} {
+		tg := s.Lookup(host)
+		if tg == nil || tg.Limiter == nil || tg.Limiter.Limit() != want {
+			t.Fatalf("%s: target %+v, want limit %+v", host, tg, want)
+		}
+	}
+	if s.Lookup("c.test").Limiter != nil {
+		t.Fatal("rate = 0 route has a limiter")
+	}
+	if got := s.Lookup("other.test").Route; got != "" {
+		t.Fatalf("default pool target named %q", got)
+	}
+	if s.Lookup("a.test").RateLimited != m.RateLimited("a.test") {
+		t.Fatal("429 counter not wired to the metrics")
+	}
+	if len(s.TrustedProxies) != 1 {
+		t.Fatalf("TrustedProxies %v", s.TrustedProxies)
+	}
+
+	// A snapshot rebuilt from the same config shares each client's bucket.
+	client := netip.MustParseAddr("192.0.2.1")
+	for range 5 {
+		s.Lookup("b.test").Limiter.Allow(client)
+	}
+	s2, err := NewSnapshot(c, Runtime{RateLimit: tab, Metrics: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s2.Lookup("b.test").Limiter.Allow(client); ok {
+		t.Fatal("a rebuilt snapshot reset the client's bucket")
+	}
+
+	// Without a table nothing is limited, as for -check-config.
+	s3, err := NewSnapshot(c, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.Lookup("a.test").Limiter != nil || s3.Lookup("a.test").RateLimited == nil {
+		t.Fatal("no table: want no limiter and a private counter")
 	}
 }
 

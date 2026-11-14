@@ -19,6 +19,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/httpx"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -324,11 +325,22 @@ func (cc *clientConn) proxy(ctx context.Context, snap *config.Snapshot, req *htt
 	if reason := cc.misdirected(snap, req.Host); reason != "" {
 		return cc.reject(rec, req, http.StatusMisdirectedRequest, reason)
 	}
-	pool := snap.Route(req.Host)
-	if pool == nil {
+	target := snap.Lookup(req.Host)
+	if target == nil {
 		return cc.reject(rec, req, http.StatusNotFound, "no route for host")
 	}
+	pool := target.Pool
 	rec.pool, rec.poolStats = pool.Name, pool.Stats
+	// The rate limit comes after routing, since each route has its own,
+	// and before a backend is chosen, so a refused request costs no
+	// balancer pick and no upstream connection.
+	if target.Limiter != nil {
+		client := ratelimit.ClientAddr(cc.tc.Peer(), req.Header["X-Forwarded-For"], snap.TrustedProxies)
+		if ok, wait := target.Limiter.Allow(client); !ok {
+			target.RateLimited.Add(1)
+			return cc.tooManyRequests(rec, req, client, wait, clientKeepAlive)
+		}
+	}
 	// The balancer sees the headers as the client sent them, before the
 	// proxy adds its own.
 	cc.info = lb.RequestInfo{ClientIP: cc.ip, Header: req.Header}
@@ -675,6 +687,33 @@ func (cc *clientConn) dialError(rec *accessRecord, err error, head, linger bool)
 	cc.writeError(rec.status, head)
 	cc.logAccess(rec)
 }
+
+// tooManyRequests answers a request over its client's rate limit with 429
+// and a Retry-After of wait, rounded up to seconds. A request without a body
+// keeps the connection, if the client wants it: closing it would make a
+// client that retries pay for a new connection, and a TLS handshake, every
+// time. A request with a body ends the connection with a lingering close,
+// as other refusals do, since the unread body is still on it.
+func (cc *clientConn) tooManyRequests(rec *accessRecord, req *http.Request, client netip.Addr, wait time.Duration, clientKeepAlive bool) bool {
+	keepAlive := clientKeepAlive && req.Body == http.NoBody
+	cc.linger = req.Body != http.NoBody
+	cc.dw.Timeout = errorWriteTimeout
+	err := httpx.WriteTooManyRequests(cc.bw, ratelimit.RetryAfter(wait), keepAlive, req.Method == http.MethodHead)
+	rec.status = http.StatusTooManyRequests
+	rec.err = rateLimitedError{client: client}
+	if err != nil {
+		rec.err = fmt.Errorf("%w; client write: %w", rec.err, err)
+	}
+	cc.logAccess(rec)
+	return keepAlive && err == nil
+}
+
+// rateLimitedError is the access log's error for a request refused by the
+// rate limit. It names the address the limit was applied to, which differs
+// from the connection's when a trusted proxy forwarded the request.
+type rateLimitedError struct{ client netip.Addr }
+
+func (e rateLimitedError) Error() string { return "rate limited: client " + e.client.String() }
 
 // misdirected returns why a request for host must not be served on this
 // connection, or "" if it may. On a TLS connection the request's host must

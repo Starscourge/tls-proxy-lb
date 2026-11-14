@@ -11,6 +11,7 @@ import (
 	"github.com/Starscourge/tls-proxy-lb/internal/health"
 	"github.com/Starscourge/tls-proxy-lb/internal/lb"
 	"github.com/Starscourge/tls-proxy-lb/internal/metrics"
+	"github.com/Starscourge/tls-proxy-lb/internal/ratelimit"
 	"github.com/Starscourge/tls-proxy-lb/internal/tlsx"
 	"github.com/Starscourge/tls-proxy-lb/internal/upstream"
 )
@@ -30,16 +31,33 @@ type Snapshot struct {
 	Listeners []Listener
 	Timeouts  Timeouts
 	Limits    Limits
+	RateLimit RateLimit
 	Upstream  Upstream
 	Health    health.Options
 	Admin     Admin
+	// TrustedProxies are the peers whose X-Forwarded-For names the client.
+	// Callers must not modify it.
+	TrustedProxies ratelimit.Trusted
 	// Certs are the route and default certificates, read by every TLS
 	// handshake through tlsx.ServerConfig.
 	Certs *tlsx.CertSet
 
 	pools  map[string]*lb.Pool
-	routes map[string]*lb.Pool
-	def    *lb.Pool
+	routes map[string]*Target
+	def    *Target
+}
+
+// Target is where a request for one host goes: the pool that serves it and
+// the rate limit it is held to.
+type Target struct {
+	// Route is the route's host, or "" for requests served by the
+	// default pool.
+	Route string
+	Pool  *lb.Pool
+	// Limiter is nil when the route has no rate limit.
+	Limiter *ratelimit.Limiter
+	// RateLimited counts the route's requests refused with 429.
+	RateLimited *atomic.Uint64
 }
 
 // Runtime is the process-wide state a snapshot's pools are wired to. It
@@ -56,6 +74,9 @@ type Runtime struct {
 	// Metrics supplies each pool's and backend's stats. Nil leaves them
 	// counting into stats no one reads.
 	Metrics *metrics.Metrics
+	// RateLimit holds every client's token buckets. Nil turns rate
+	// limiting off whatever the config says.
+	RateLimit *ratelimit.Table
 }
 
 // NewSnapshot builds the pools and route table for c and loads its
@@ -73,11 +94,14 @@ func NewSnapshot(c *Config, rt Runtime) (*Snapshot, error) {
 		Listeners: append([]Listener(nil), c.Listeners...),
 		Timeouts:  c.Timeouts,
 		Limits:    c.Limits,
+		RateLimit: c.RateLimit,
 		Upstream:  c.Upstream,
 		Health:    c.Health,
 		Admin:     c.Admin,
-		pools:     make(map[string]*lb.Pool, len(c.Pools)),
-		routes:    make(map[string]*lb.Pool, len(c.Routes)),
+		// Copied, so a caller changing the Config later cannot reach it.
+		TrustedProxies: slices.Clone(c.TrustedProxies),
+		pools:          make(map[string]*lb.Pool, len(c.Pools)),
+		routes:         make(map[string]*Target, len(c.Routes)),
 	}
 	for _, pc := range c.Pools {
 		p, err := lb.NewPool(pc.Name, pc.Backends, lb.PoolOptions{Algorithm: pc.Algorithm, HashHeader: pc.HashHeader})
@@ -106,14 +130,19 @@ func NewSnapshot(c *Config, rt Runtime) (*Snapshot, error) {
 		if !ok {
 			return nil, fmt.Errorf("config: route %q names unknown pool %q", r.Host, r.Pool)
 		}
-		s.routes[NormaliseHost(r.Host)] = p
+		host := NormaliseHost(r.Host)
+		limit := c.RateLimit.Default
+		if r.RateLimit != nil {
+			limit = *r.RateLimit
+		}
+		s.routes[host] = newTarget(host, p, limit, rt)
 	}
 	if c.DefaultPool != "" {
 		p, ok := s.pools[c.DefaultPool]
 		if !ok {
 			return nil, fmt.Errorf("config: default_pool names unknown pool %q", c.DefaultPool)
 		}
-		s.def = p
+		s.def = newTarget("", p, c.RateLimit.Default, rt)
 	}
 	certs, err := loadCerts(c)
 	if err != nil {
@@ -121,6 +150,20 @@ func NewSnapshot(c *Config, rt Runtime) (*Snapshot, error) {
 	}
 	s.Certs = certs
 	return s, nil
+}
+
+// newTarget wires a route to its pool, its limiter and its 429 counter.
+func newTarget(route string, p *lb.Pool, limit ratelimit.Limit, rt Runtime) *Target {
+	t := &Target{Route: route, Pool: p}
+	if rt.RateLimit != nil {
+		t.Limiter = rt.RateLimit.Limiter(route, limit)
+	}
+	if rt.Metrics != nil {
+		t.RateLimited = rt.Metrics.RateLimited(route)
+	} else {
+		t.RateLimited = new(atomic.Uint64)
+	}
+	return t
 }
 
 // loadCerts reads every route certificate and the default one.
@@ -156,13 +199,21 @@ func loadCerts(c *Config) (*tlsx.CertSet, error) {
 	return tlsx.NewCertSet(byHost, def), nil
 }
 
-// Route returns the pool for a request's Host header value: the route for
-// its normalised host, else the default pool, else nil.
-func (s *Snapshot) Route(host string) *lb.Pool {
-	if p, ok := s.routes[NormaliseHost(host)]; ok {
-		return p
+// Lookup returns the target for a request's Host header value: the route
+// for its normalised host, else the default pool's, else nil.
+func (s *Snapshot) Lookup(host string) *Target {
+	if t, ok := s.routes[NormaliseHost(host)]; ok {
+		return t
 	}
 	return s.def
+}
+
+// Route returns the pool Lookup's target names, or nil.
+func (s *Snapshot) Route(host string) *lb.Pool {
+	if t := s.Lookup(host); t != nil {
+		return t.Pool
+	}
+	return nil
 }
 
 // HasRoute reports whether host has a route of its own, not counting the

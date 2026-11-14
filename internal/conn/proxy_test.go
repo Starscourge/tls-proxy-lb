@@ -220,6 +220,10 @@ func dialClient(t *testing.T, addr string) *client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
+	return newClient(t, c)
+}
+
+func newClient(t *testing.T, c net.Conn) *client {
 	return &client{t: t, c: c, br: bufio.NewReader(c)}
 }
 

@@ -49,6 +49,9 @@ func ReadRequest(br *bufio.Reader, lr *HeaderLimitReader, raw *[]byte, lim Reque
 	if r := CheckRaw(*raw, lim.RawLimits); r != ReasonNone {
 		return req, r, nil
 	}
+	if !validTarget(req) {
+		return req, ReasonBadTarget, nil
+	}
 	if req.Host != "" && !ValidHost(req.Host) {
 		return req, ReasonInvalidHost, nil
 	}
@@ -56,6 +59,22 @@ func ReadRequest(br *bufio.Reader, lr *HeaderLimitReader, raw *[]byte, lim Reque
 		return req, ReasonBodyTooLarge, nil
 	}
 	return req, ReasonNone, nil
+}
+
+// validTarget reports whether req's target is one of the forms a proxy
+// forwards (RFC 9112 section 3.2): origin-form, absolute-form with an
+// http or https scheme and a host, or asterisk-form for OPTIONS.
+// Authority-form is CONNECT's, which is refused anyway.
+func validTarget(req *http.Request) bool {
+	u := req.URL
+	switch {
+	case req.RequestURI == "*":
+		return req.Method == http.MethodOptions
+	case len(req.RequestURI) > 0 && req.RequestURI[0] == '/':
+		return u.Scheme == "" && u.Host == "" && u.Opaque == ""
+	default:
+		return (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.Opaque == ""
+	}
 }
 
 // forbiddenTrailers are fields a trailer must not carry (RFC 9110 section

@@ -123,6 +123,14 @@ func TestReadRequest(t *testing.T) {
 		{"CONNECT", "CONNECT a:443 HTTP/1.1\r\nHost: a:443\r\n\r\n", ReasonConnect},
 		{"HTTP/2.0", "GET / HTTP/2.0\r\nHost: a\r\n\r\n", ReasonUnsupportedVersion},
 		{"bare LF", "GET / HTTP/1.1\nHost: a\n\n", ReasonBareLF},
+		{"opaque target", "00 A:0 HTTP/1.0\r\n\r\n", ReasonBadTarget},
+		{"relative target", "GET a/b HTTP/1.1\r\nHost: a\r\n\r\n", ReasonMalformed}, // net/http refuses it
+		{"ftp target", "GET ftp://a/b HTTP/1.1\r\nHost: a\r\n\r\n", ReasonBadTarget},
+		{"absolute target, no host", "GET http:///b HTTP/1.1\r\nHost: a\r\n\r\n", ReasonBadTarget},
+		{"asterisk for GET", "GET * HTTP/1.1\r\nHost: a\r\n\r\n", ReasonBadTarget},
+		{"asterisk for OPTIONS", "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n", ReasonNone},
+		{"absolute target", "GET https://a.test/x?y HTTP/1.1\r\nHost: b\r\n\r\n", ReasonNone},
+		{"double slash path", "GET //x/y HTTP/1.1\r\nHost: a\r\n\r\n", ReasonNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

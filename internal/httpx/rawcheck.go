@@ -31,6 +31,11 @@ const (
 	// ReasonInvalidHost: a Host (or absolute-form target) with bytes no
 	// host may have.
 	ReasonInvalidHost
+	// ReasonBadTarget: a request target that is not origin-form ("/..."),
+	// absolute-form with an http or https scheme and a host, or "*" for
+	// OPTIONS. net/http parses "a:0" as an opaque URL and Request.Write
+	// would forward it as "0" (found by FuzzRequestPath).
+	ReasonBadTarget
 	// ReasonCLAndTE: both Content-Length and Transfer-Encoding.
 	ReasonCLAndTE
 	// ReasonDuplicateCL: more than one Content-Length field, even with the
@@ -60,7 +65,7 @@ const (
 
 var reasonNames = [NumReasons]string{
 	"", "malformed", "header_too_large", "too_many_headers", "request_line_too_long",
-	"unsupported_version", "connect", "missing_host", "invalid_host",
+	"unsupported_version", "connect", "missing_host", "invalid_host", "bad_target",
 	"cl_and_te", "duplicate_cl", "bad_te", "te_in_http10",
 	"space_before_colon", "bare_lf", "bare_cr", "folded_header", "body_too_large",
 }

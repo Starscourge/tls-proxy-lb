@@ -2,11 +2,13 @@ package conn
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -100,5 +102,69 @@ func TestProxyRecoversPanic(t *testing.T) {
 	cl.send(get("a"))
 	if resp, _ := cl.read("GET"); resp.StatusCode != 200 {
 		t.Fatalf("after the panics: status %d", resp.StatusCode)
+	}
+}
+
+// emfileListener fails every Accept with EMFILE, as a listener does when
+// the process is out of file descriptors, and counts the calls.
+type emfileListener struct {
+	net.Listener
+	calls  atomic.Int64
+	closed chan struct{}
+}
+
+func (l *emfileListener) Accept() (net.Conn, error) {
+	l.calls.Add(1)
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+		return nil, &net.OpError{Op: "accept", Net: "tcp", Err: syscall.EMFILE}
+	}
+}
+
+func (l *emfileListener) Close() error {
+	select {
+	case <-l.closed:
+	default:
+		close(l.closed)
+	}
+	return nil
+}
+
+func (l *emfileListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1} }
+
+// Accept failing with EMFILE backs off, doubling from 5 ms, instead of
+// spinning; the failure is counted each time and logged at most once a
+// second; and closing the server ends a long backoff at once.
+func TestAcceptBackoff(t *testing.T) {
+	logs := &logBuf{}
+	s := NewServer(Limits{}, slog.New(slog.NewJSONHandler(logs, nil)))
+	var errs atomic.Int64
+	s.OnAcceptError = func() { errs.Add(1) }
+	ln := &emfileListener{closed: make(chan struct{})}
+	errc := make(chan error, 1)
+	go func() { errc <- s.Serve(ln, &echoHandler{}) }()
+
+	// 5+10+20+40+80+160+320+640 ms = 1,275 ms: eight or nine calls in
+	// 1.4 s, where a fixed 10 ms retry would make about 140.
+	time.Sleep(1400 * time.Millisecond)
+	calls := ln.calls.Load()
+	if calls < 6 || calls > 11 {
+		t.Fatalf("%d Accept calls in 1.4 s, want about 9", calls)
+	}
+	if errs.Load() != calls {
+		t.Fatalf("%d errors counted for %d calls", errs.Load(), calls)
+	}
+	if n := len(logs.records("accept failed; backing off")); n < 1 || n > 2 {
+		t.Fatalf("%d log lines in 1.4 s, want at most one a second", n)
+	}
+	start := time.Now()
+	s.Close()
+	if err := <-errc; !errors.Is(err, ErrServerClosed) {
+		t.Fatalf("Serve: %v", err)
+	}
+	if el := time.Since(start); el > 200*time.Millisecond {
+		t.Fatalf("Close waited %v for the backoff", el)
 	}
 }

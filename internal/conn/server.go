@@ -10,10 +10,19 @@ import (
 	"time"
 )
 
-// acceptRetryDelay is the pause after an Accept error other than a closed
-// listener, so a persistent error cannot spin the loop. Phase 8 replaces it
-// with a backoff for running out of file descriptors.
-const acceptRetryDelay = 10 * time.Millisecond
+// After an Accept error other than a closed listener (EMFILE when the
+// process is out of file descriptors, ENFILE, ENOBUFS, a connection reset
+// before it was accepted), the loop waits before trying again: 5 ms at
+// first, doubling to at most a second, back to 5 ms after the next
+// success. These are net/http's numbers. Retrying at once would spin a CPU
+// on a condition that lasts until connections close; a fixed long wait
+// would leave the listener idle after a one-off error. The error is logged
+// at most once a second.
+const (
+	minAcceptBackoff = 5 * time.Millisecond
+	maxAcceptBackoff = time.Second
+	acceptLogEvery   = time.Second
+)
 
 // Handler serves one client connection. ServeConn returns when the
 // connection is finished; the Server closes it afterwards. ctx is cancelled
@@ -39,14 +48,18 @@ type Server struct {
 	// OnPanic, if set, is called once for each panic recovered in a
 	// connection goroutine, after it is logged. Set it before Serve.
 	OnPanic func()
+	// OnAcceptError, if set, is called for each Accept that fails with an
+	// error other than a closed listener. Set it before Serve.
+	OnAcceptError func()
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	mu sync.Mutex
-	// listeners maps each served listener to whether CloseListener has
-	// stopped it.
-	listeners map[net.Listener]bool
+	// listeners maps each served listener to a channel closed when its
+	// accept loop is told to stop, by CloseListener or the server
+	// closing.
+	listeners map[net.Listener]chan struct{}
 	closed    bool
 	loops     sync.WaitGroup
 }
@@ -63,7 +76,7 @@ func NewServer(limits Limits, logger *slog.Logger) *Server {
 		logger:    logger,
 		ctx:       ctx,
 		cancel:    cancel,
-		listeners: make(map[net.Listener]bool),
+		listeners: make(map[net.Listener]chan struct{}),
 	}
 }
 
@@ -84,7 +97,8 @@ func (s *Server) Serve(ln net.Listener, h Handler) error {
 		ln.Close()
 		return ErrServerClosed
 	}
-	s.listeners[ln] = false
+	stop := make(chan struct{})
+	s.listeners[ln] = stop
 	s.loops.Add(1)
 	s.mu.Unlock()
 	defer s.loops.Done()
@@ -95,6 +109,11 @@ func (s *Server) Serve(ln net.Listener, h Handler) error {
 		ln.Close()
 	}()
 
+	var (
+		backoff    time.Duration
+		lastLog    time.Time
+		suppressed int
+	)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -104,14 +123,27 @@ func (s *Server) Serve(ln net.Listener, h Handler) error {
 			if errors.Is(err, net.ErrClosed) {
 				return err
 			}
-			s.logger.Warn("accept failed", "listener", ln.Addr().String(), "err", err)
+			if s.OnAcceptError != nil {
+				s.OnAcceptError()
+			}
+			backoff = min(max(2*backoff, minAcceptBackoff), maxAcceptBackoff)
+			if now := time.Now(); now.Sub(lastLog) >= acceptLogEvery {
+				s.logger.Warn("accept failed; backing off", "listener", ln.Addr().String(), "err", err,
+					"backoff_ms", backoff.Milliseconds(), "suppressed", suppressed)
+				lastLog, suppressed = now, 0
+			} else {
+				suppressed++
+			}
+			t := time.NewTimer(backoff)
 			select {
-			case <-time.After(acceptRetryDelay):
-			case <-s.ctx.Done():
+			case <-t.C:
+			case <-stop:
+				t.Stop()
 				return ErrServerClosed
 			}
 			continue
 		}
+		backoff = 0
 		tc, reason := s.tracker.Add(c)
 		switch reason {
 		case RejectNone:
@@ -162,7 +194,25 @@ func (s *Server) recoverConn(tc *TrackedConn) {
 func (s *Server) stopped(ln net.Listener) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed || s.listeners[ln]
+	if s.closed {
+		return true
+	}
+	select {
+	case <-s.listeners[ln]:
+		return true
+	default:
+		return false
+	}
+}
+
+// stopLocked tells ln's accept loop to end and closes ln; s.mu is held.
+func (s *Server) stopLocked(ln net.Listener, stop chan struct{}) {
+	select {
+	case <-stop:
+	default:
+		close(stop)
+	}
+	ln.Close()
 }
 
 // CloseListener stops accepting on ln, which Serve is serving; that Serve
@@ -172,11 +222,16 @@ func (s *Server) stopped(ln net.Listener) bool {
 func (s *Server) CloseListener(ln net.Listener) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.listeners[ln]; !ok {
+	stop, ok := s.listeners[ln]
+	if !ok {
 		return false
 	}
-	s.listeners[ln] = true
-	ln.Close()
+	select {
+	case <-stop:
+		return false // already stopped
+	default:
+	}
+	s.stopLocked(ln, stop)
 	return true
 }
 
@@ -186,8 +241,8 @@ func (s *Server) CloseListener(ln net.Listener) bool {
 func (s *Server) closeListeners() {
 	s.mu.Lock()
 	s.closed = true
-	for ln := range s.listeners {
-		ln.Close()
+	for ln, stop := range s.listeners {
+		s.stopLocked(ln, stop)
 	}
 	s.mu.Unlock()
 	s.loops.Wait()

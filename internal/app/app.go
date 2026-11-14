@@ -154,6 +154,7 @@ func New(cfg *config.Config, o Options) (*App, error) {
 	a.m = metrics.New(metrics.Sources{Upstream: a.reg, Health: a.chk, ClientConns: a.srv.Tracker().Len,
 		ClientConnsRejected: a.srv.Tracker().RejectedByName, RateLimit: a.tab})
 	a.srv.OnPanic = a.m.Panic
+	a.srv.OnAcceptError = a.m.AcceptError
 	snap, err := config.NewSnapshot(cfg, a.runtime())
 	if err != nil {
 		a.closeRuntime()

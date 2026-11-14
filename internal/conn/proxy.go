@@ -277,8 +277,8 @@ func (cc *clientConn) serveRequest(ctx context.Context, first bool) bool {
 	}
 	cc.lr.Unlimit()
 
-	if status, reason := httpx.CheckRequest(req); status != 0 {
-		return cc.reject(cc.newRecord(start, req), req, status, reason)
+	if r := httpx.CheckRequest(req); r != httpx.ReasonNone {
+		return cc.reject(cc.newRecord(start, req), req, r.Status(), r.String())
 	}
 	if cc.redirectPort != 0 {
 		return cc.redirect(snap, req, start)

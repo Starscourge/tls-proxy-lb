@@ -32,7 +32,7 @@ func TestCheckRequest(t *testing.T) {
 		{"PRI * HTTP/2.0\r\n\r\n", http.StatusHTTPVersionNotSupported},
 	}
 	for _, tc := range cases {
-		got, _ := CheckRequest(readReq(t, tc.raw))
+		got := CheckRequest(readReq(t, tc.raw)).Status()
 		if got != tc.want {
 			t.Errorf("%q: status %d, want %d", tc.raw, got, tc.want)
 		}

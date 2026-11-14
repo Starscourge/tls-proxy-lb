@@ -8,18 +8,18 @@ import (
 	"strings"
 )
 
-// CheckRequest returns the status to reject req with and a reason, or 0 if
-// the proxy can forward it.
-func CheckRequest(req *http.Request) (status int, reason string) {
+// CheckRequest returns why req, as parsed, cannot be forwarded, or
+// ReasonNone: not HTTP/1.x, CONNECT, or an HTTP/1.1 request without Host.
+func CheckRequest(req *http.Request) Reason {
 	switch {
 	case req.ProtoMajor != 1:
-		return http.StatusHTTPVersionNotSupported, "only HTTP/1.x is supported"
+		return ReasonUnsupportedVersion
 	case req.Method == http.MethodConnect:
-		return http.StatusMethodNotAllowed, "CONNECT is not supported"
+		return ReasonConnect
 	case req.ProtoAtLeast(1, 1) && req.Host == "":
-		return http.StatusBadRequest, "missing Host header"
+		return ReasonMissingHost
 	}
-	return 0, ""
+	return ReasonNone
 }
 
 // PrepareRequest rewrites a request read from a client for the upstream:

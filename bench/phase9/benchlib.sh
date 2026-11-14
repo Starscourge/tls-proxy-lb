@@ -228,7 +228,9 @@ env_info() {
   echo "clock:       $(cat /sys/devices/system/clocksource/clocksource0/current_clocksource)"
   echo "docker:      $(docker version --format '{{.Server.Version}} ({{.Server.Os}}/{{.Server.Arch}})')$(docker info --format ' {{.OperatingSystem}}' 2>/dev/null)"
   echo "go:          $(sed -n 's/^ARG GO_VERSION=//p' "$root/lab/Dockerfile") (proxy image), $(sed -n 's/^go //p' "$root/go.mod") in go.mod"
-  echo "nginx:       $(dut_exec nginx nginx -v 2>&1 | sed 's/^nginx version: //'), $(dut_exec nginx sh -c 'apk info -v 2>/dev/null | grep ^libssl3- || dpkg-query -W -f "\${Package}-\${Version}\n" "libssl3*" | grep -v -- "-\$"')"
+  # Only when nginx is part of the run (bench.sh), not gc.sh or hotspots.sh.
+  dut_exec nginx true >/dev/null 2>&1 &&
+    echo "nginx:       $(dut_exec nginx nginx -v 2>&1 | sed 's/^nginx version: //'), $(dut_exec nginx sh -c 'apk info -v 2>/dev/null | grep ^libssl3- || dpkg-query -W -f "\${Package}-\${Version}\n" "libssl3*" | grep -v -- "-\$"')"
   echo "loadgen:     wrk $(sed -n 's/^ARG WRK_VERSION=//p' "$root/lab/Dockerfile") and wrk2 $(sed -n 's/^ARG WRK2_COMMIT=//p' "$root/lab/Dockerfile" | cut -c1-12), both never resuming TLS sessions; $(lg sh -c 'apk info -v 2>/dev/null | grep -E "^libssl3-"')"
   echo "network:     host (loopback in Docker Desktop's VM)"
   echo "cpusets:     device under test ${BENCH_DUT_CPUS:-2,4,6,8}; origins ${BENCH_ORIGIN1_CPUS:-10,11} and ${BENCH_ORIGIN2_CPUS:-12,13}; load generator ${BENCH_LOADGEN_CPUS:-14-21}"

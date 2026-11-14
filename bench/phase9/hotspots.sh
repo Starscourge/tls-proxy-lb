@@ -64,8 +64,12 @@ if [[ -z "${PLOT_ONLY:-}" ]]; then
     p2=$!
     pprof "$label" mutex "mutex?seconds=30"
     wait "$p1" "$p2" "$w"
+    # Allocations as bytes allocated during the 30 s (alloc_space), not
+    # pprof's default for this profile, the bytes still live at its end.
     for prof in cpu allocs mutex; do
-      (cd "$root" && go tool pprof -top -nodecount=30 "$out/$label/$prof.pprof") >"$out/$label/top-$prof.txt" 2>&1
+      idx=()
+      [[ $prof == allocs ]] && idx=(-sample_index=alloc_space)
+      (cd "$root" && go tool pprof -top -nodecount=30 "${idx[@]}" "$out/$label/$prof.pprof") >"$out/$label/top-$prof.txt" 2>&1
     done
     echo "   CPU: $(grep -m1 -E '^ +[0-9.]+(s|ms)' "$out/$label/top-cpu.txt" | awk '{ print $NF }') on top"
 

@@ -86,11 +86,14 @@ for fault in $faults; do
   for cfg in $configs; do runs+=("$cfg=$out/$fault/$cfg"); done
   # A redraw keeps the header of the run that made the raw results; read
   # it before tee truncates the file.
-  header="# bench/phase9/demo-slow.sh $rate $duration at $rev, $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  [[ -n "${PLOT_ONLY:-}" ]] && header="$(head -1 "$out/summary-$fault.txt")"
+  if [[ -n "${PLOT_ONLY:-}" ]]; then
+    header="$(head -2 "$out/summary-$fault.txt")"
+  else
+    header="# bench/phase9/demo-slow.sh $rate $duration at $rev, $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# netem $(netem_args "$fault") on $victim; configs in bench/phase9/configs/; k6 $("${compose[@]}" exec -T loadgen k6 version 2>/dev/null | head -1)"
+  fi
   {
     echo "$header"
-    echo "# netem $(netem_args "$fault") on $victim; configs in bench/phase9/configs/; k6 $("${compose[@]}" exec -T loadgen k6 version 2>/dev/null | head -1)"
     plot slow -fault "netem $(netem_args "$fault")" -backend "$victim_addr" -name "$victim" \
       -svg "$out/slow-$fault.svg" "${runs[@]}"
   } | tee "$out/summary-$fault.txt"

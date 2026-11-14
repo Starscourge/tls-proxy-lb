@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="786" viewBox="0 0 960 786" role="img">
+<title>Kill a backend under load: backend2, 0 failed of 60001 requests</title>
+<style>
+svg { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 12px; }
+.bg { fill: #fcfcfb; } .ink { fill: #0b0b0b; } .ink2 { fill: #52514e; } .muted { fill: #898781; }
+.grid { stroke: #e1e0d9; stroke-width: 1; } .axis { stroke: #c3c2b7; stroke-width: 1; }
+.band { fill: #0b0b0b; fill-opacity: 0.05; }
+.mark { stroke: #52514e; stroke-width: 1; stroke-dasharray: 4 3; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.thin { stroke-width: 1.25; } .dash { stroke-dasharray: 5 3; }
+.s1 { stroke: #2a78d6; fill: #2a78d6; } .s2 { stroke: #eb6834; fill: #eb6834; }
+.s3 { stroke: #1baf7a; fill: #1baf7a; } .s4 { stroke: #eda100; fill: #eda100; }
+.s5 { stroke: #e87ba4; fill: #e87ba4; } .s6 { stroke: #008300; fill: #008300; }
+.s7 { stroke: #6250d6; fill: #6250d6; } .s8 { stroke: #e34948; fill: #e34948; }
+.neutral { stroke: #898781; fill: #898781; } .err { stroke: #d03b3b; fill: #d03b3b; }
+.line.s1, .line.s2, .line.s3, .line.s4, .line.s5, .line.s6, .line.s7, .line.s8, .line.neutral, .line.err { fill: none; }
+.whisker { stroke: #52514e; stroke-width: 1.25; }
+.area { stroke: none; fill-opacity: 0.85; } .gap { fill: none; stroke: #fcfcfb; stroke-width: 2; }
+@media (prefers-color-scheme: dark) {
+  .bg { fill: #1a1a19; } .ink { fill: #f0efec; } .ink2 { fill: #c3c2b7; }
+  .grid { stroke: #2c2c2a; } .axis { stroke: #383835; }
+  .band { fill: #f0efec; fill-opacity: 0.07; } .mark { stroke: #c3c2b7; }
+  .s1 { stroke: #3987e5; fill: #3987e5; } .s2 { stroke: #d95926; fill: #d95926; }
+  .s3 { stroke: #199e70; fill: #199e70; } .s4 { stroke: #c98500; fill: #c98500; }
+  .s5 { stroke: #d55181; fill: #d55181; } .s6 { stroke: #0ca30c; fill: #0ca30c; }
+  .s7 { stroke: #9085e9; fill: #9085e9; } .s8 { stroke: #e66767; fill: #e66767; }
+  .whisker { stroke: #c3c2b7; } .gap { stroke: #1a1a19; }
+}
+</style>
+<rect class="bg" x="0" y="0" width="960" height="786" rx="6"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Kill a backend under load: backend2, 0 failed of 60001 requests</text>
+<text class="ink2" x="16" y="46">k6 at a constant 1000 req/s; docker kill at 20 s, docker start at 40 s; ejected 102 ms after the kill, re-admitted 2731 ms after the start</text>
+<text class="ink" x="16" y="72" font-weight="600">Requests per second, by outcome</text>
+<line class="line neutral" x1="16.0" y1="85" x2="32.0" y2="85"/><text class="ink2" x="37.0" y="89">succeeded</text>
+<line class="line err" x1="119.8" y1="85" x2="135.8" y2="85"/><text class="ink2" x="140.8" y="89">failed</text>
+<rect class="band" x="325.4" y="104.0" width="253.3" height="158.0"><title>backend2 down</title></rect>
+<text class="muted" x="452.0" y="130.0" text-anchor="middle">backend2 down</text>
+<line class="grid" x1="72.0" y1="262.0" x2="832.0" y2="262.0"/><text class="muted" x="66.0" y="266.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="230.4" x2="832.0" y2="230.4"/><text class="muted" x="66.0" y="234.4" text-anchor="end">250</text>
+<line class="grid" x1="72.0" y1="198.8" x2="832.0" y2="198.8"/><text class="muted" x="66.0" y="202.8" text-anchor="end">500</text>
+<line class="grid" x1="72.0" y1="167.2" x2="832.0" y2="167.2"/><text class="muted" x="66.0" y="171.2" text-anchor="end">750</text>
+<line class="grid" x1="72.0" y1="135.6" x2="832.0" y2="135.6"/><text class="muted" x="66.0" y="139.6" text-anchor="end">1k</text>
+<line class="grid" x1="72.0" y1="104.0" x2="832.0" y2="104.0"/><text class="muted" x="66.0" y="108.0" text-anchor="end">1.25k</text>
+<line class="axis" x1="72.0" y1="262.0" x2="72.0" y2="266.0"/><text class="muted" x="72.0" y="279.0" text-anchor="middle">0 s</text>
+<line class="axis" x1="198.7" y1="262.0" x2="198.7" y2="266.0"/><text class="muted" x="198.7" y="279.0" text-anchor="middle">10 s</text>
+<line class="axis" x1="325.3" y1="262.0" x2="325.3" y2="266.0"/><text class="muted" x="325.3" y="279.0" text-anchor="middle">20 s</text>
+<line class="axis" x1="452.0" y1="262.0" x2="452.0" y2="266.0"/><text class="muted" x="452.0" y="279.0" text-anchor="middle">30 s</text>
+<line class="axis" x1="578.7" y1="262.0" x2="578.7" y2="266.0"/><text class="muted" x="578.7" y="279.0" text-anchor="middle">40 s</text>
+<line class="axis" x1="705.3" y1="262.0" x2="705.3" y2="266.0"/><text class="muted" x="705.3" y="279.0" text-anchor="middle">50 s</text>
+<line class="axis" x1="832.0" y1="262.0" x2="832.0" y2="266.0"/><text class="muted" x="832.0" y="279.0" text-anchor="middle">60 s</text>
+<line class="axis" x1="72.0" y1="262.0" x2="832.0" y2="262.0"/>
+<text class="muted" x="16.0" y="183.0" text-anchor="middle" transform="rotate(-90 16.0 183.0)">req/s</text>
+<line class="mark" x1="325.4" y1="102.0" x2="325.4" y2="262.0"/><text class="ink2" x="329.4" y="98.0" font-size="11">backend2 killed</text>
+<line class="mark" x1="326.7" y1="102.0" x2="326.7" y2="262.0"/><text class="ink2" x="330.7" y="114.0" font-size="11">ejected +102 ms</text>
+<line class="mark" x1="578.7" y1="102.0" x2="578.7" y2="262.0"/><text class="ink2" x="582.7" y="98.0" font-size="11">backend2 started</text>
+<line class="mark" x1="613.3" y1="102.0" x2="613.3" y2="262.0"/><text class="ink2" x="617.3" y="114.0" font-size="11">re-admitted +2731 ms</text>
+<path class="line neutral" d="M78.3 135.1 L91.0 135.5 L103.7 135.6 L116.3 135.6 L129.0 135.6 L141.7 135.6 L154.3 135.6 L167.0 135.6 L179.7 135.7 L192.3 135.6 L205.0 135.5 L217.7 135.6 L230.3 135.6 L243.0 135.6 L255.7 135.6 L268.3 135.6 L281.0 135.6 L293.7 135.6 L306.3 135.6 L319.0 135.6 L331.7 135.6 L344.3 135.7 L357.0 135.5 L369.7 135.6 L382.3 135.7 L395.0 135.5 L407.7 135.7 L420.3 135.6 L433.0 135.5 L445.7 135.6 L458.3 135.7 L471.0 135.6 L483.7 135.5 L496.3 135.6 L509.0 135.7 L521.7 135.5 L534.3 135.6 L547.0 135.6 L559.7 135.6 L572.3 135.7 L585.0 135.5 L597.7 135.6 L610.3 135.6 L623.0 135.6 L635.7 135.7 L648.3 135.6 L661.0 135.5 L673.7 135.6 L686.3 135.6 L699.0 135.6 L711.7 135.6 L724.3 135.6 L737.0 135.6 L749.7 135.6 L762.3 135.6 L775.0 135.7 L787.7 135.5 L800.3 135.7 L813.0 135.5 L825.7 136.1"><title>succeeded</title></path>
+<path class="line err" d="M78.3 262.0 L91.0 262.0 L103.7 262.0 L116.3 262.0 L129.0 262.0 L141.7 262.0 L154.3 262.0 L167.0 262.0 L179.7 262.0 L192.3 262.0 L205.0 262.0 L217.7 262.0 L230.3 262.0 L243.0 262.0 L255.7 262.0 L268.3 262.0 L281.0 262.0 L293.7 262.0 L306.3 262.0 L319.0 262.0 L331.7 262.0 L344.3 262.0 L357.0 262.0 L369.7 262.0 L382.3 262.0 L395.0 262.0 L407.7 262.0 L420.3 262.0 L433.0 262.0 L445.7 262.0 L458.3 262.0 L471.0 262.0 L483.7 262.0 L496.3 262.0 L509.0 262.0 L521.7 262.0 L534.3 262.0 L547.0 262.0 L559.7 262.0 L572.3 262.0 L585.0 262.0 L597.7 262.0 L610.3 262.0 L623.0 262.0 L635.7 262.0 L648.3 262.0 L661.0 262.0 L673.7 262.0 L686.3 262.0 L699.0 262.0 L711.7 262.0 L724.3 262.0 L737.0 262.0 L749.7 262.0 L762.3 262.0 L775.0 262.0 L787.7 262.0 L800.3 262.0 L813.0 262.0 L825.7 262.0"><title>failed</title></path>
+<text class="ink2" x="840.0" y="140.1">succeeded</text>
+<text class="ink2" x="840.0" y="266.0">failed</text>
+<text class="ink" x="16" y="312" font-weight="600">Successful requests per second, by backend (stacked)</text>
+<line class="line s1" x1="16.0" y1="325" x2="32.0" y2="325"/><text class="ink2" x="37.0" y="329">backend1</text>
+<line class="line s2" x1="112.6" y1="325" x2="128.6" y2="325"/><text class="ink2" x="133.6" y="329">backend2</text>
+<line class="line s3" x1="209.2" y1="325" x2="225.2" y2="325"/><text class="ink2" x="230.2" y="329">backend3</text>
+<rect class="band" x="325.4" y="344.0" width="253.3" height="158.0"><title>backend2 down</title></rect>
+<text class="muted" x="452.0" y="370.0" text-anchor="middle">backend2 down</text>
+<line class="grid" x1="72.0" y1="502.0" x2="832.0" y2="502.0"/><text class="muted" x="66.0" y="506.0" text-anchor="end">0</text>
+<line class="grid" x1="72.0" y1="470.4" x2="832.0" y2="470.4"/><text class="muted" x="66.0" y="474.4" text-anchor="end">250</text>
+<line class="grid" x1="72.0" y1="438.8" x2="832.0" y2="438.8"/><text class="muted" x="66.0" y="442.8" text-anchor="end">500</text>
+<line class="grid" x1="72.0" y1="407.2" x2="832.0" y2="407.2"/><text class="muted" x="66.0" y="411.2" text-anchor="end">750</text>
+<line class="grid" x1="72.0" y1="375.6" x2="832.0" y2="375.6"/><text class="muted" x="66.0" y="379.6" text-anchor="end">1k</text>
+<line class="grid" x1="72.0" y1="344.0" x2="832.0" y2="344.0"/><text class="muted" x="66.0" y="348.0" text-anchor="end">1.25k</text>
+<line class="axis" x1="72.0" y1="502.0" x2="72.0" y2="506.0"/><text class="muted" x="72.0" y="519.0" text-anchor="middle">0 s</text>
+<line class="axis" x1="198.7" y1="502.0" x2="198.7" y2="506.0"/><text class="muted" x="198.7" y="519.0" text-anchor="middle">10 s</text>
+<line class="axis" x1="325.3" y1="502.0" x2="325.3" y2="506.0"/><text class="muted" x="325.3" y="519.0" text-anchor="middle">20 s</text>
+<line class="axis" x1="452.0" y1="502.0" x2="452.0" y2="506.0"/><text class="muted" x="452.0" y="519.0" text-anchor="middle">30 s</text>
+<line class="axis" x1="578.7" y1="502.0" x2="578.7" y2="506.0"/><text class="muted" x="578.7" y="519.0" text-anchor="middle">40 s</text>
+<line class="axis" x1="705.3" y1="502.0" x2="705.3" y2="506.0"/><text class="muted" x="705.3" y="519.0" text-anchor="middle">50 s</text>
+<line class="axis" x1="832.0" y1="502.0" x2="832.0" y2="506.0"/><text class="muted" x="832.0" y="519.0" text-anchor="middle">60 s</text>
+<line class="axis" x1="72.0" y1="502.0" x2="832.0" y2="502.0"/>
+<text class="muted" x="16.0" y="423.0" text-anchor="middle" transform="rotate(-90 16.0 423.0)">req/s</text>
+<line class="mark" x1="325.4" y1="342.0" x2="325.4" y2="502.0"/><text class="ink2" x="329.4" y="338.0" font-size="11">backend2 killed</text>
+<line class="mark" x1="326.7" y1="342.0" x2="326.7" y2="502.0"/><text class="ink2" x="330.7" y="354.0" font-size="11">ejected +102 ms</text>
+<line class="mark" x1="578.7" y1="342.0" x2="578.7" y2="502.0"/><text class="ink2" x="582.7" y="338.0" font-size="11">backend2 started</text>
+<line class="mark" x1="613.3" y1="342.0" x2="613.3" y2="502.0"/><text class="ink2" x="617.3" y="354.0" font-size="11">re-admitted +2731 ms</text>
+<path class="area s1" d="M78.3 459.8 L91.0 459.9 L103.7 459.8 L116.3 459.9 L129.0 459.8 L141.7 459.9 L154.3 459.8 L167.0 460.0 L179.7 459.9 L192.3 459.8 L205.0 459.8 L217.7 459.9 L230.3 459.8 L243.0 460.0 L255.7 459.8 L268.3 459.9 L281.0 459.8 L293.7 459.9 L306.3 459.8 L319.0 459.9 L331.7 440.7 L344.3 438.8 L357.0 438.8 L369.7 438.7 L382.3 438.9 L395.0 438.8 L407.7 438.8 L420.3 438.8 L433.0 438.7 L445.7 438.8 L458.3 438.9 L471.0 438.8 L483.7 438.8 L496.3 438.8 L509.0 438.9 L521.7 438.8 L534.3 438.8 L547.0 438.8 L559.7 438.9 L572.3 438.8 L585.0 438.7 L597.7 438.8 L610.3 444.4 L623.0 459.9 L635.7 460.0 L648.3 459.8 L661.0 459.9 L673.7 459.9 L686.3 459.8 L699.0 459.9 L711.7 459.8 L724.3 459.9 L737.0 459.9 L749.7 459.8 L762.3 459.9 L775.0 459.8 L787.7 459.9 L800.3 459.8 L813.0 459.9 L825.7 459.9 L825.7 502.0 L813.0 502.0 L800.3 502.0 L787.7 502.0 L775.0 502.0 L762.3 502.0 L749.7 502.0 L737.0 502.0 L724.3 502.0 L711.7 502.0 L699.0 502.0 L686.3 502.0 L673.7 502.0 L661.0 502.0 L648.3 502.0 L635.7 502.0 L623.0 502.0 L610.3 502.0 L597.7 502.0 L585.0 502.0 L572.3 502.0 L559.7 502.0 L547.0 502.0 L534.3 502.0 L521.7 502.0 L509.0 502.0 L496.3 502.0 L483.7 502.0 L471.0 502.0 L458.3 502.0 L445.7 502.0 L433.0 502.0 L420.3 502.0 L407.7 502.0 L395.0 502.0 L382.3 502.0 L369.7 502.0 L357.0 502.0 L344.3 502.0 L331.7 502.0 L319.0 502.0 L306.3 502.0 L293.7 502.0 L281.0 502.0 L268.3 502.0 L255.7 502.0 L243.0 502.0 L230.3 502.0 L217.7 502.0 L205.0 502.0 L192.3 502.0 L179.7 502.0 L167.0 502.0 L154.3 502.0 L141.7 502.0 L129.0 502.0 L116.3 502.0 L103.7 502.0 L91.0 502.0 L78.3 502.0 Z"><title>backend1</title></path>
+<path class="area s2" d="M78.3 417.4 L91.0 417.7 L103.7 417.7 L116.3 417.7 L129.0 417.7 L141.7 417.7 L154.3 417.7 L167.0 417.8 L179.7 417.8 L192.3 417.6 L205.0 417.7 L217.7 417.7 L230.3 417.7 L243.0 417.8 L255.7 417.7 L268.3 417.8 L281.0 417.7 L293.7 417.8 L306.3 417.7 L319.0 417.8 L331.7 436.5 L344.3 438.8 L357.0 438.8 L369.7 438.7 L382.3 438.9 L395.0 438.8 L407.7 438.8 L420.3 438.8 L433.0 438.7 L445.7 438.8 L458.3 438.9 L471.0 438.8 L483.7 438.8 L496.3 438.8 L509.0 438.9 L521.7 438.8 L534.3 438.8 L547.0 438.8 L559.7 438.9 L572.3 438.8 L585.0 438.7 L597.7 438.8 L610.3 433.2 L623.0 417.7 L635.7 417.9 L648.3 417.7 L661.0 417.7 L673.7 417.7 L686.3 417.7 L699.0 417.7 L711.7 417.8 L724.3 417.7 L737.0 417.8 L749.7 417.6 L762.3 417.8 L775.0 417.8 L787.7 417.7 L800.3 417.7 L813.0 417.7 L825.7 417.9 L825.7 459.9 L813.0 459.9 L800.3 459.8 L787.7 459.9 L775.0 459.8 L762.3 459.9 L749.7 459.8 L737.0 459.9 L724.3 459.9 L711.7 459.8 L699.0 459.9 L686.3 459.8 L673.7 459.9 L661.0 459.9 L648.3 459.8 L635.7 460.0 L623.0 459.9 L610.3 444.4 L597.7 438.8 L585.0 438.7 L572.3 438.8 L559.7 438.9 L547.0 438.8 L534.3 438.8 L521.7 438.8 L509.0 438.9 L496.3 438.8 L483.7 438.8 L471.0 438.8 L458.3 438.9 L445.7 438.8 L433.0 438.7 L420.3 438.8 L407.7 438.8 L395.0 438.8 L382.3 438.9 L369.7 438.7 L357.0 438.8 L344.3 438.8 L331.7 440.7 L319.0 459.9 L306.3 459.8 L293.7 459.9 L281.0 459.8 L268.3 459.9 L255.7 459.8 L243.0 460.0 L230.3 459.8 L217.7 459.9 L205.0 459.8 L192.3 459.8 L179.7 459.9 L167.0 460.0 L154.3 459.8 L141.7 459.9 L129.0 459.8 L116.3 459.9 L103.7 459.8 L91.0 459.9 L78.3 459.8 Z"><title>backend2</title></path>
+<path class="area s3" d="M78.3 375.1 L91.0 375.5 L103.7 375.6 L116.3 375.6 L129.0 375.6 L141.7 375.6 L154.3 375.6 L167.0 375.6 L179.7 375.7 L192.3 375.6 L205.0 375.5 L217.7 375.6 L230.3 375.6 L243.0 375.6 L255.7 375.6 L268.3 375.6 L281.0 375.6 L293.7 375.6 L306.3 375.6 L319.0 375.6 L331.7 375.6 L344.3 375.7 L357.0 375.5 L369.7 375.6 L382.3 375.7 L395.0 375.5 L407.7 375.7 L420.3 375.6 L433.0 375.5 L445.7 375.6 L458.3 375.7 L471.0 375.6 L483.7 375.5 L496.3 375.6 L509.0 375.7 L521.7 375.5 L534.3 375.6 L547.0 375.6 L559.7 375.6 L572.3 375.7 L585.0 375.5 L597.7 375.6 L610.3 375.6 L623.0 375.6 L635.7 375.7 L648.3 375.6 L661.0 375.5 L673.7 375.6 L686.3 375.6 L699.0 375.6 L711.7 375.6 L724.3 375.6 L737.0 375.6 L749.7 375.6 L762.3 375.6 L775.0 375.7 L787.7 375.5 L800.3 375.7 L813.0 375.5 L825.7 376.1 L825.7 417.9 L813.0 417.7 L800.3 417.7 L787.7 417.7 L775.0 417.8 L762.3 417.8 L749.7 417.6 L737.0 417.8 L724.3 417.7 L711.7 417.8 L699.0 417.7 L686.3 417.7 L673.7 417.7 L661.0 417.7 L648.3 417.7 L635.7 417.9 L623.0 417.7 L610.3 433.2 L597.7 438.8 L585.0 438.7 L572.3 438.8 L559.7 438.9 L547.0 438.8 L534.3 438.8 L521.7 438.8 L509.0 438.9 L496.3 438.8 L483.7 438.8 L471.0 438.8 L458.3 438.9 L445.7 438.8 L433.0 438.7 L420.3 438.8 L407.7 438.8 L395.0 438.8 L382.3 438.9 L369.7 438.7 L357.0 438.8 L344.3 438.8 L331.7 436.5 L319.0 417.8 L306.3 417.7 L293.7 417.8 L281.0 417.7 L268.3 417.8 L255.7 417.7 L243.0 417.8 L230.3 417.7 L217.7 417.7 L205.0 417.7 L192.3 417.6 L179.7 417.8 L167.0 417.8 L154.3 417.7 L141.7 417.7 L129.0 417.7 L116.3 417.7 L103.7 417.7 L91.0 417.7 L78.3 417.4 Z"><title>backend3</title></path>
+<path class="gap" d="M78.3 459.8 L91.0 459.9 L103.7 459.8 L116.3 459.9 L129.0 459.8 L141.7 459.9 L154.3 459.8 L167.0 460.0 L179.7 459.9 L192.3 459.8 L205.0 459.8 L217.7 459.9 L230.3 459.8 L243.0 460.0 L255.7 459.8 L268.3 459.9 L281.0 459.8 L293.7 459.9 L306.3 459.8 L319.0 459.9 L331.7 440.7 L344.3 438.8 L357.0 438.8 L369.7 438.7 L382.3 438.9 L395.0 438.8 L407.7 438.8 L420.3 438.8 L433.0 438.7 L445.7 438.8 L458.3 438.9 L471.0 438.8 L483.7 438.8 L496.3 438.8 L509.0 438.9 L521.7 438.8 L534.3 438.8 L547.0 438.8 L559.7 438.9 L572.3 438.8 L585.0 438.7 L597.7 438.8 L610.3 444.4 L623.0 459.9 L635.7 460.0 L648.3 459.8 L661.0 459.9 L673.7 459.9 L686.3 459.8 L699.0 459.9 L711.7 459.8 L724.3 459.9 L737.0 459.9 L749.7 459.8 L762.3 459.9 L775.0 459.8 L787.7 459.9 L800.3 459.8 L813.0 459.9 L825.7 459.9"/>
+<path class="gap" d="M78.3 417.4 L91.0 417.7 L103.7 417.7 L116.3 417.7 L129.0 417.7 L141.7 417.7 L154.3 417.7 L167.0 417.8 L179.7 417.8 L192.3 417.6 L205.0 417.7 L217.7 417.7 L230.3 417.7 L243.0 417.8 L255.7 417.7 L268.3 417.8 L281.0 417.7 L293.7 417.8 L306.3 417.7 L319.0 417.8 L331.7 436.5 L344.3 438.8 L357.0 438.8 L369.7 438.7 L382.3 438.9 L395.0 438.8 L407.7 438.8 L420.3 438.8 L433.0 438.7 L445.7 438.8 L458.3 438.9 L471.0 438.8 L483.7 438.8 L496.3 438.8 L509.0 438.9 L521.7 438.8 L534.3 438.8 L547.0 438.8 L559.7 438.9 L572.3 438.8 L585.0 438.7 L597.7 438.8 L610.3 433.2 L623.0 417.7 L635.7 417.9 L648.3 417.7 L661.0 417.7 L673.7 417.7 L686.3 417.7 L699.0 417.7 L711.7 417.8 L724.3 417.7 L737.0 417.8 L749.7 417.6 L762.3 417.8 L775.0 417.8 L787.7 417.7 L800.3 417.7 L813.0 417.7 L825.7 417.9"/>
+<text class="ink2" x="840.0" y="401.0">backend3</text>
+<text class="ink2" x="840.0" y="442.9">backend2</text>
+<text class="ink2" x="840.0" y="485.0">backend1</text>
+<text class="ink" x="16" y="552" font-weight="600">Latency by second of request start (log scale)</text>
+<line class="line s1" x1="16.0" y1="565" x2="32.0" y2="565"/><text class="ink2" x="37.0" y="569">p50</text>
+<line class="line s2" x1="76.6" y1="565" x2="92.6" y2="565"/><text class="ink2" x="97.6" y="569">p99</text>
+<line class="line neutral dash" x1="137.2" y1="565" x2="153.2" y2="565"/><text class="ink2" x="158.2" y="569">max</text>
+<rect class="band" x="325.4" y="584.0" width="253.3" height="158.0"><title>backend2 down</title></rect>
+<text class="muted" x="452.0" y="610.0" text-anchor="middle">backend2 down</text>
+<line class="grid" x1="72.0" y1="742.0" x2="832.0" y2="742.0"/><text class="muted" x="66.0" y="746.0" text-anchor="end">0.1</text>
+<line class="grid" x1="72.0" y1="702.5" x2="832.0" y2="702.5"/><text class="muted" x="66.0" y="706.5" text-anchor="end">1</text>
+<line class="grid" x1="72.0" y1="663.0" x2="832.0" y2="663.0"/><text class="muted" x="66.0" y="667.0" text-anchor="end">10</text>
+<line class="grid" x1="72.0" y1="623.5" x2="832.0" y2="623.5"/><text class="muted" x="66.0" y="627.5" text-anchor="end">100</text>
+<line class="grid" x1="72.0" y1="584.0" x2="832.0" y2="584.0"/><text class="muted" x="66.0" y="588.0" text-anchor="end">1k</text>
+<line class="axis" x1="72.0" y1="742.0" x2="72.0" y2="746.0"/><text class="muted" x="72.0" y="759.0" text-anchor="middle">0 s</text>
+<line class="axis" x1="198.7" y1="742.0" x2="198.7" y2="746.0"/><text class="muted" x="198.7" y="759.0" text-anchor="middle">10 s</text>
+<line class="axis" x1="325.3" y1="742.0" x2="325.3" y2="746.0"/><text class="muted" x="325.3" y="759.0" text-anchor="middle">20 s</text>
+<line class="axis" x1="452.0" y1="742.0" x2="452.0" y2="746.0"/><text class="muted" x="452.0" y="759.0" text-anchor="middle">30 s</text>
+<line class="axis" x1="578.7" y1="742.0" x2="578.7" y2="746.0"/><text class="muted" x="578.7" y="759.0" text-anchor="middle">40 s</text>
+<line class="axis" x1="705.3" y1="742.0" x2="705.3" y2="746.0"/><text class="muted" x="705.3" y="759.0" text-anchor="middle">50 s</text>
+<line class="axis" x1="832.0" y1="742.0" x2="832.0" y2="746.0"/><text class="muted" x="832.0" y="759.0" text-anchor="middle">60 s</text>
+<line class="axis" x1="72.0" y1="742.0" x2="832.0" y2="742.0"/>
+<text class="muted" x="832.0" y="774.0" text-anchor="end">time since the load started</text>
+<text class="muted" x="16.0" y="663.0" text-anchor="middle" transform="rotate(-90 16.0 663.0)">ms</text>
+<line class="mark" x1="325.4" y1="582.0" x2="325.4" y2="742.0"/><text class="ink2" x="329.4" y="578.0" font-size="11">backend2 killed</text>
+<line class="mark" x1="326.7" y1="582.0" x2="326.7" y2="742.0"/><text class="ink2" x="330.7" y="594.0" font-size="11">ejected +102 ms</text>
+<line class="mark" x1="578.7" y1="582.0" x2="578.7" y2="742.0"/><text class="ink2" x="582.7" y="578.0" font-size="11">backend2 started</text>
+<line class="mark" x1="613.3" y1="582.0" x2="613.3" y2="742.0"/><text class="ink2" x="617.3" y="594.0" font-size="11">re-admitted +2731 ms</text>
+<path class="line s1" d="M78.3 717.5 L91.0 718.7 L103.7 718.8 L116.3 718.5 L129.0 718.4 L141.7 718.3 L154.3 718.7 L167.0 718.7 L179.7 718.4 L192.3 718.0 L205.0 718.3 L217.7 718.5 L230.3 718.7 L243.0 718.2 L255.7 718.6 L268.3 718.5 L281.0 718.7 L293.7 718.6 L306.3 718.3 L319.0 718.5 L331.7 718.3 L344.3 718.6 L357.0 718.5 L369.7 718.7 L382.3 718.7 L395.0 718.7 L407.7 718.5 L420.3 718.7 L433.0 718.8 L445.7 718.6 L458.3 718.5 L471.0 718.3 L483.7 718.7 L496.3 718.6 L509.0 717.9 L521.7 718.1 L534.3 718.7 L547.0 718.5 L559.7 718.5 L572.3 718.5 L585.0 718.0 L597.7 718.5 L610.3 718.3 L623.0 718.4 L635.7 718.0 L648.3 718.3 L661.0 718.4 L673.7 718.5 L686.3 717.8 L699.0 718.4 L711.7 718.2 L724.3 718.5 L737.0 718.3 L749.7 718.5 L762.3 717.3 L775.0 718.0 L787.7 718.4 L800.3 718.1 L813.0 718.3 L825.7 717.8"><title>p50</title></path>
+<path class="line s2" d="M78.3 620.6 L91.0 706.9 L103.7 707.9 L116.3 708.1 L129.0 710.0 L141.7 709.0 L154.3 706.2 L167.0 711.1 L179.7 706.8 L192.3 706.6 L205.0 708.4 L217.7 707.9 L230.3 707.0 L243.0 709.1 L255.7 709.7 L268.3 709.7 L281.0 707.4 L293.7 707.9 L306.3 709.0 L319.0 707.6 L331.7 707.9 L344.3 707.2 L357.0 710.0 L369.7 708.4 L382.3 708.6 L395.0 709.7 L407.7 709.6 L420.3 711.1 L433.0 710.6 L445.7 711.2 L458.3 707.7 L471.0 709.7 L483.7 710.6 L496.3 711.7 L509.0 707.1 L521.7 709.2 L534.3 710.5 L547.0 706.9 L559.7 710.2 L572.3 707.5 L585.0 704.8 L597.7 708.5 L610.3 707.6 L623.0 710.3 L635.7 708.4 L648.3 707.5 L661.0 709.2 L673.7 710.6 L686.3 708.6 L699.0 710.8 L711.7 704.6 L724.3 708.0 L737.0 707.9 L749.7 711.0 L762.3 707.7 L775.0 706.6 L787.7 708.4 L800.3 708.5 L813.0 707.2 L825.7 704.8"><title>p99</title></path>
+<path class="line neutral dash" d="M78.3 613.6 L91.0 681.8 L103.7 688.8 L116.3 680.8 L129.0 692.7 L141.7 689.9 L154.3 679.1 L167.0 704.3 L179.7 675.4 L192.3 684.4 L205.0 704.4 L217.7 679.8 L230.3 677.0 L243.0 686.4 L255.7 680.1 L268.3 701.4 L281.0 674.8 L293.7 677.8 L306.3 703.3 L319.0 683.7 L331.7 693.2 L344.3 687.2 L357.0 679.3 L369.7 700.5 L382.3 679.4 L395.0 679.9 L407.7 683.6 L420.3 694.6 L433.0 680.0 L445.7 698.7 L458.3 677.6 L471.0 684.4 L483.7 704.3 L496.3 676.4 L509.0 688.6 L521.7 683.3 L534.3 703.4 L547.0 676.2 L559.7 679.5 L572.3 695.1 L585.0 678.3 L597.7 695.1 L610.3 695.7 L623.0 687.5 L635.7 682.0 L648.3 691.5 L661.0 680.7 L673.7 688.4 L686.3 676.9 L699.0 696.7 L711.7 676.1 L724.3 678.7 L737.0 692.7 L749.7 704.6 L762.3 700.5 L775.0 679.8 L787.7 680.1 L800.3 679.1 L813.0 681.9 L825.7 681.4"><title>max</title></path>
+<text class="ink2" x="840.0" y="685.4">max</text>
+<text class="ink2" x="840.0" y="708.8">p99</text>
+<text class="ink2" x="840.0" y="721.8">p50</text>
+</svg>

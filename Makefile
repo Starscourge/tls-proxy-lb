@@ -9,7 +9,8 @@ UNIT_PKGS  = $(shell $(GO) list ./... | grep -v /test/integration)
         check-config lab-up lab-down lab-check netem-check prom-check wrk-race bench-lb testssl \
         bench-allocs bench-reuse wrk-race-reuse bench-scaling bench-profile \
         bench-kill bench-stop bench-ratelimit-k6 bench-ratelimit-race \
-        bench-reload bench-reload-control stop-check fuzz bench-slowloris clean
+        bench-reload bench-reload-control stop-check fuzz bench-slowloris \
+        demo-kill clean
 
 all: build test lint
 
@@ -118,6 +119,10 @@ fuzz:                    # each fuzz target for at least a CPU-hour; corpora int
 	bench/phase8/fuzz.sh
 bench-slowloris:         # slowhttptest: slow headers, body and read at 5,000 connections, in the lab
 	bench/phase8/slowhttptest.sh
+
+# Phase 9 experiments; results and graphs in bench/phase9/results/.
+demo-kill:               # docker kill one of three backends under k6 at 1,000 req/s, then start it
+	bench/phase9/demo-kill.sh
 
 clean:
 	rm -rf $(BIN)

@@ -110,6 +110,30 @@ func WriteError(w *bufio.Writer, status int, head bool) error {
 	return w.Flush()
 }
 
+// tooManyBody is the body of a 429 response.
+const tooManyBody = "429 Too Many Requests\n"
+
+// WriteTooManyRequests writes a 429 response with a Retry-After of
+// retryAfter seconds, and flushes. keepAlive leaves the connection open
+// (no Connection: close); head omits the body. It does not allocate, since
+// an over-limit client can ask for it as fast as it likes.
+func WriteTooManyRequests(w *bufio.Writer, retryAfter int, keepAlive, head bool) error {
+	w.WriteString("HTTP/1.1 429 Too Many Requests\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Length: 22\r\n" + // len(tooManyBody)
+		"Retry-After: ")
+	w.Write(strconv.AppendInt(w.AvailableBuffer(), int64(retryAfter), 10))
+	if keepAlive {
+		w.WriteString("\r\n\r\n")
+	} else {
+		w.WriteString("\r\nConnection: close\r\n\r\n")
+	}
+	if !head {
+		w.WriteString(tooManyBody)
+	}
+	return w.Flush()
+}
+
 // WriteRedirect writes a redirect to location that closes the connection,
 // and flushes. head omits the body. location must already be a valid URL;
 // it is written as is.

@@ -266,3 +266,43 @@ func TestWriteError(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteTooManyRequests(t *testing.T) {
+	for _, tc := range []struct {
+		keepAlive, head bool
+	}{{false, false}, {true, false}, {true, true}, {false, true}} {
+		var buf bytes.Buffer
+		if err := WriteTooManyRequests(bufio.NewWriter(&buf), 17, tc.keepAlive, tc.head); err != nil {
+			t.Fatal(err)
+		}
+		method := "GET"
+		if tc.head {
+			method = "HEAD"
+		}
+		br := bufio.NewReader(&buf)
+		resp, err := http.ReadResponse(br, &http.Request{Method: method})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 429 || resp.Header.Get("Retry-After") != "17" || resp.Close == tc.keepAlive {
+			t.Fatalf("%+v: status %d Retry-After %q close %v", tc, resp.StatusCode, resp.Header.Get("Retry-After"), resp.Close)
+		}
+		if resp.ContentLength != int64(len(tooManyBody)) {
+			t.Fatalf("Content-Length %d", resp.ContentLength)
+		}
+		if !tc.head && string(body) != tooManyBody {
+			t.Fatalf("body %q", body)
+		}
+		if br.Buffered() != 0 || buf.Len() != 0 {
+			t.Fatalf("%+v: %d bytes after the response", tc, br.Buffered()+buf.Len())
+		}
+	}
+}
+
+func TestWriteTooManyRequestsAllocs(t *testing.T) {
+	w := bufio.NewWriter(io.Discard)
+	if n := testing.AllocsPerRun(1000, func() { WriteTooManyRequests(w, 3, true, false) }); n != 0 {
+		t.Fatalf("allocates %v per call", n)
+	}
+}

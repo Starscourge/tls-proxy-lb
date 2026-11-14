@@ -1,0 +1,3 @@
+# digits then letters
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nContent-Length: 5x\r\n\r\nhelloGET /smuggled-cl-trailing-junk HTTP/1.1\r\nHost: a.test\r\n\r\n

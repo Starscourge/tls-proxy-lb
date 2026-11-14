@@ -1,0 +1,3 @@
+# a Trailer field announcing Content-Length
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTrailer: Content-Length\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nContent-Length: 50\r\n\r\nGET /smuggled-trailer-declares-cl HTTP/1.1\r\nHost: a.test\r\n\r\n

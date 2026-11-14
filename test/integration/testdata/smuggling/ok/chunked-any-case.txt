@@ -1,0 +1,3 @@
+# chunked in another case is still chunked
+# paths: /
+POST / HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: Chunked\r\n\r\n0\r\n\r\n

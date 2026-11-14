@@ -1,0 +1,3 @@
+# a second request on the request line
+# want: 400
+GET / HTTP/1.1 GET /smuggled-two-requests-one-line HTTP/1.1\r\nHost: a.test\r\n\r\n

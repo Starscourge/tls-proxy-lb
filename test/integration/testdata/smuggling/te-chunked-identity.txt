@@ -1,0 +1,3 @@
+# TE list ending in identity
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked, identity\r\n\r\n0\r\n\r\nGET /smuggled-te-chunked-identity HTTP/1.1\r\nHost: a.test\r\n\r\n

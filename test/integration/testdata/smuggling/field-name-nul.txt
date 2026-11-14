@@ -1,0 +1,3 @@
+# a NUL in a field name
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer\x00-Encoding: chunked\r\n\r\n0\r\n\r\nGET /smuggled-field-name-nul HTTP/1.1\r\nHost: a.test\r\n\r\n

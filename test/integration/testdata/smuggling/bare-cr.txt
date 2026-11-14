@@ -1,0 +1,3 @@
+# a CR inside a field line
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nX-A: 1\rTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /smuggled-bare-cr HTTP/1.1\r\nHost: a.test\r\n\r\n

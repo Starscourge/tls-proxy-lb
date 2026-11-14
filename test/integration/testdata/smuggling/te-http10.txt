@@ -1,0 +1,3 @@
+# chunked on HTTP/1.0, which net/http ignores
+# want: 400
+POST /slow?ms=300 HTTP/1.0\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /smuggled-te-http10 HTTP/1.1\r\nHost: a.test\r\n\r\n

@@ -1,0 +1,3 @@
+# a valid TE in another case, with a CL
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: CHUNKED\r\nContent-Length: 4\r\n\r\n3d\r\nGET /smuggled-te-uppercase-with-cl HTTP/1.1\r\nHost: a.test\r\n\r\n\r\n0\r\n\r\n

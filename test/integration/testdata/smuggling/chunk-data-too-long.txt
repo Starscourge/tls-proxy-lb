@@ -1,0 +1,3 @@
+# more chunk data than the size says
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nhello\r\n0\r\n\r\nGET /smuggled-chunk-data-too-long HTTP/1.1\r\nHost: a.test\r\n\r\n

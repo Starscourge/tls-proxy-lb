@@ -1,0 +1,3 @@
+# TE.CL: chunked for the proxy, a short CL for a backend that prefers it
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n2e\r\nGET /smuggled-te-cl HTTP/1.1\r\nHost: a.test\r\n\r\n\r\n0\r\n\r\n

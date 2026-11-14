@@ -1,0 +1,3 @@
+# a TE field folded into another field's value
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nX-Pad: a\r\n Transfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n3d\r\nGET /smuggled-te-folded-into-other HTTP/1.1\r\nHost: a.test\r\n\r\n\r\n0\r\n\r\n

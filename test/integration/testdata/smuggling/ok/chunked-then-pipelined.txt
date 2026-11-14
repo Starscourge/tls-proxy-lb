@@ -1,0 +1,3 @@
+# a chunked body with an extension and a trailer, then a second request
+# paths: / /second
+POST / HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\nTrailer: X-Sum\r\n\r\n5;ext=1\r\nhello\r\n0\r\nX-Sum: 1\r\n\r\nGET /second HTTP/1.1\r\nHost: a.test\r\n\r\n

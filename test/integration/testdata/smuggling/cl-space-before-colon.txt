@@ -1,0 +1,3 @@
+# a space before the CL colon
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nContent-Length : 5\r\n\r\nhelloGET /smuggled-cl-space-before-colon HTTP/1.1\r\nHost: a.test\r\n\r\n

@@ -1,0 +1,3 @@
+# a chunk size past 64 bits
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffff5\r\nhello\r\n0\r\n\r\nGET /smuggled-chunk-size-overflow HTTP/1.1\r\nHost: a.test\r\n\r\n

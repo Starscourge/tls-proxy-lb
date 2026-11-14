@@ -1,0 +1,3 @@
+# an HTTP/0.9 request line
+# want: 400
+GET /\r\n\r\nGET /smuggled-http09 HTTP/1.1\r\nHost: a.test\r\n\r\n

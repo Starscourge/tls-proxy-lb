@@ -1,0 +1,3 @@
+# a chunk extension hiding a bare LF
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\n5;a\nb\r\nhello\r\n0\r\n\r\nGET /smuggled-chunk-ext-lf HTTP/1.1\r\nHost: a.test\r\n\r\n

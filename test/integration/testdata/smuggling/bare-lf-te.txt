@@ -1,0 +1,3 @@
+# an LF-only line carrying TE
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\nContent-Length: 4\r\n\r\n33\r\nGET /smuggled-bare-lf-te HTTP/1.1\r\nHost: a.test\r\n\r\n\r\n0\r\n\r\n

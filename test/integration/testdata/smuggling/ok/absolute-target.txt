@@ -1,0 +1,3 @@
+# an absolute-form target
+# paths: /abs
+GET http://a.test/abs HTTP/1.1\r\nHost: a.test\r\n\r\n

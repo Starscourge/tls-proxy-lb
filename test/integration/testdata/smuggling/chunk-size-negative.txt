@@ -1,0 +1,3 @@
+# a negative chunk size
+# want: 400
+POST /slow?ms=300 HTTP/1.1\r\nHost: a.test\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nhello\r\n0\r\n\r\nGET /smuggled-chunk-size-negative HTTP/1.1\r\nHost: a.test\r\n\r\n

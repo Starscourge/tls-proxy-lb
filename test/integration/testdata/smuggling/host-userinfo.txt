@@ -1,0 +1,3 @@
+# a Host with userinfo
+# want: 400
+GET / HTTP/1.1\r\nHost: x@a.test\r\n\r\nGET /smuggled-host-userinfo HTTP/1.1\r\nHost: a.test\r\n\r\n

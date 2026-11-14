@@ -1,0 +1,3 @@
+# an opaque target net/http would forward as something else
+# want: 400
+GET a:0 HTTP/1.1\r\nHost: a.test\r\n\r\nGET /smuggled-target-opaque HTTP/1.1\r\nHost: a.test\r\n\r\n

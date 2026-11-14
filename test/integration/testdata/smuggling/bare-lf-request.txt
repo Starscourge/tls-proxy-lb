@@ -1,0 +1,3 @@
+# LF-only line endings throughout
+# want: 400
+POST /slow?ms=300 HTTP/1.1\nHost: a.test\nContent-Length: 0\n\nGET /smuggled-bare-lf-request HTTP/1.1\r\nHost: a.test\r\n\r\n

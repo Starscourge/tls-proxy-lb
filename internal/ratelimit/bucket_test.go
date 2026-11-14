@@ -149,14 +149,14 @@ func TestLimitShrinks(t *testing.T) {
 func TestFullAt(t *testing.T) {
 	p := Limit{Rate: 1, Burst: 2}.params()
 	b := fullBucket(0, p)
-	if !b.fullAt(0) {
+	if !b.fullAt(0, p.capacity) {
 		t.Fatal("new bucket not full")
 	}
 	b.take(0, p)
-	if b.fullAt(int64(999 * time.Millisecond)) {
+	if b.fullAt(int64(999*time.Millisecond), p.capacity) {
 		t.Fatal("full before an interval passed")
 	}
-	if !b.fullAt(int64(time.Second)) {
+	if !b.fullAt(int64(time.Second), p.capacity) {
 		t.Fatal("not full after an interval")
 	}
 }

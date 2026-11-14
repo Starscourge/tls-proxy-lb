@@ -61,19 +61,18 @@ func (l Limit) params() params {
 	return params{interval: iv, capacity: iv * int64(l.Burst)}
 }
 
-// bucket is one client's token bucket. tokens is the credit held, in
-// nanoseconds, as of last; last is nanoseconds since the table's epoch.
-// capacity is copied from the params of the latest use, so the sweeper can
-// tell a full bucket without knowing which limit it belongs to.
+// bucket is one client's token bucket: tokens is the credit held, in
+// nanoseconds, as of last, which is nanoseconds since the table's epoch.
+// The capacity belongs to the route, not the bucket, which keeps a table
+// slot at 40 bytes.
 type bucket struct {
-	tokens   int64
-	last     int64
-	capacity int64
+	tokens int64
+	last   int64
 }
 
 // fullBucket returns a bucket that is full at now.
 func fullBucket(now int64, p params) bucket {
-	return bucket{tokens: p.capacity, last: now, capacity: p.capacity}
+	return bucket{tokens: p.capacity, last: now}
 }
 
 // take refills b up to now and spends one request's credit if it holds
@@ -90,7 +89,6 @@ func (b *bucket) take(now int64, p params) (ok bool, wait time.Duration) {
 // refill adds the credit earned since last, up to capacity. A clock that
 // goes backwards earns nothing; last never moves back.
 func (b *bucket) refill(now, capacity int64) {
-	b.capacity = capacity
 	if elapsed := now - b.last; elapsed > 0 {
 		// Compare before adding: tokens + elapsed could overflow after a
 		// long idle spell.
@@ -107,11 +105,11 @@ func (b *bucket) refill(now, capacity int64) {
 	}
 }
 
-// fullAt reports whether b has refilled to its capacity by now. Such a
-// bucket is the same as a missing one.
-func (b *bucket) fullAt(now int64) bool {
+// fullAt reports whether b has refilled to capacity by now. Such a bucket
+// is the same as a missing one.
+func (b *bucket) fullAt(now, capacity int64) bool {
 	elapsed := now - b.last
-	return elapsed >= 0 && elapsed >= b.capacity-b.tokens
+	return elapsed >= 0 && elapsed >= capacity-b.tokens
 }
 
 // RetryAfter rounds a wait up to whole seconds, at least 1, for the

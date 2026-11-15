@@ -484,3 +484,7 @@ lab/               Docker Compose lab, certificate script
 docs/              design decisions, usage, threat model, smuggling and
                    fuzzing notes, testssl.sh reports
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
